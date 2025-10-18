@@ -40,6 +40,29 @@ next-env.d.ts
 .genkit/*
 .env*
 
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
 # firebase
 firebase-debug.log
 firestore-debug.log
