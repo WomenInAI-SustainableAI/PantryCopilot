@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/sidebar";
 import SidebarContent from "@/components/layout/sidebar-content";
 import Header from "@/components/layout/header";
-import type { InventoryItem, Recipe, UserPreferences } from "@/lib/types";
+import type { InventoryItem, Recipe, UserPreferences, Ingredient } from "@/lib/types";
 import { initialInventory, initialRecipes, initialUser } from "@/lib/data";
 import RecipeDetails from "@/components/recipes/recipe-details";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -28,6 +28,25 @@ export default function DashboardPage() {
     setInventory(newInventory);
   };
 
+  const handleCookRecipe = (recipe: Recipe) => {
+    const updatedInventory = inventory.map(invItem => {
+      const recipeIngredient = recipe.ingredients.find(
+        ing => ing.name.toLowerCase() === invItem.name.toLowerCase()
+      );
+      if (recipeIngredient) {
+        return {
+          ...invItem,
+          quantity: Math.max(0, invItem.quantity - recipeIngredient.quantity),
+        };
+      }
+      return invItem;
+    }).filter(item => item.quantity > 0); // Remove items with 0 quantity
+  
+    setInventory(updatedInventory);
+    setSelectedRecipe(null); // Close the details panel
+  };
+
+
   const handleUpdatePreferences = (newPreferences: UserPreferences) => {
     setUserPreferences(newPreferences);
   };
@@ -45,43 +64,42 @@ export default function DashboardPage() {
   }, [inventory]);
 
   const recommendedRecipes = useMemo(() => {
-    const updatedRecipes = recipes.map((recipe) => {
-      let matches = 0;
-      let expiringMatches = 0;
-      const recipeIngredients = new Set(
-        recipe.ingredients.map((i) => i.name.toLowerCase())
-      );
-      const inventoryNames = new Set(
-        inventory.map((i) => i.name.toLowerCase())
-      );
-      const expiringSoonNames = new Set(
-        expiringSoonItems.map((i) => i.name.toLowerCase())
-      );
+    const inventoryMap = new Map(
+      inventory.map(item => [item.name.toLowerCase(), item])
+    );
+    const expiringSoonNames = new Set(
+      expiringSoonItems.map(i => i.name.toLowerCase())
+    );
 
-      for (const ingredient of recipeIngredients) {
-        if (inventoryNames.has(ingredient)) {
-          matches++;
-          if (expiringSoonNames.has(ingredient)) {
+    const updatedRecipes = recipes.map(recipe => {
+      let weightedMatchSum = 0;
+      let expiringMatches = 0;
+      let totalPossibleWeight = 0;
+
+      recipe.ingredients.forEach(ingredient => {
+        const inventoryItem = inventoryMap.get(ingredient.name.toLowerCase());
+        const weight = 1; // All ingredients start with a weight of 1
+        totalPossibleWeight += weight;
+
+        if (inventoryItem) {
+          const quantityRatio = Math.min(inventoryItem.quantity / ingredient.quantity, 1.0);
+          weightedMatchSum += quantityRatio * weight;
+
+          if (expiringSoonNames.has(ingredient.name.toLowerCase())) {
             expiringMatches++;
           }
         }
-      }
-
-      const matchPercentage =
-        recipe.ingredients.length > 0
-          ? Math.round((matches / recipe.ingredients.length) * 100)
-          : 0;
-
-      const expiringIngredientBonus =
-        expiringSoonItems.length > 0
-          ? (expiringMatches / expiringSoonItems.length) * 30
-          : 0;
+      });
       
-      const score = matchPercentage * 0.7 + expiringIngredientBonus * 0.3;
+      const matchPercentage = totalPossibleWeight > 0 ? (weightedMatchSum / totalPossibleWeight) * 100 : 0;
+      
+      const expiringIngredientBonus = expiringMatches * 10;
+      
+      const score = matchPercentage + expiringIngredientBonus;
 
       return {
         ...recipe,
-        matchPercentage,
+        matchPercentage: Math.round(matchPercentage),
         expiringIngredientsCount: expiringMatches,
         score,
       };
@@ -95,6 +113,7 @@ export default function DashboardPage() {
 
     return filteredRecipes.sort((a, b) => b.score - a.score);
   }, [recipes, inventory, userPreferences, expiringSoonItems]);
+
 
   return (
     <SidebarProvider defaultOpen>
@@ -172,6 +191,7 @@ export default function DashboardPage() {
             inventory={inventory}
             open={!!selectedRecipe}
             onOpenChange={(isOpen) => !isOpen && setSelectedRecipe(null)}
+            onCookRecipe={handleCookRecipe}
           />
         )}
       </SidebarInset>

@@ -24,6 +24,9 @@ const ExplainRecipeRecommendationInputSchema = z.object({
     .describe(
       'The percentage of ingredients in the recipe that match the user inventory.'
     ),
+  missingIngredients: z
+    .array(z.string())
+    .describe('A list of ingredients required by the recipe that the user does not have enough of.'),
 });
 export type ExplainRecipeRecommendationInput = z.infer<
   typeof ExplainRecipeRecommendationInputSchema
@@ -51,18 +54,19 @@ const prompt = ai.definePrompt({
   prompt: `You are an AI recipe recommendation expert. You are provided with the following information about a recipe recommendation:
 
 Recipe Name: {{{recipeName}}}
-Expiring Ingredients: {{#if expiringIngredients}}{{#each expiringIngredients}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}{{else}}None{{/if}}
-Allergies: {{#if allergies}}{{#each allergies}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}{{else}}None{{/if}}
+Expiring Ingredients Used: {{#if expiringIngredients}}{{#each expiringIngredients}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}{{else}}None{{/if}}
+User's Allergies: {{#if allergies}}{{#each allergies}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}{{else}}None{{/if}}
 Inventory Match Percentage: {{{inventoryMatchPercentage}}}%
+Missing or Insufficient Ingredients: {{#if missingIngredients}}{{#each missingIngredients}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}{{else}}None{{/if}}
 
-Explain why this recipe is a good recommendation for the user. Your explanation should include:
+Explain why this recipe is a good recommendation for the user. Your explanation should be a concise and helpful paragraph. Address the following points:
 
-*   Urgency: Based on the expiring ingredients, explain how urgent it is to cook this recipe.
-*   Safety: Based on the user's allergies, explain if this recipe is safe for them to consume. Highlight any potential allergens present in the recipe.
-*   Money Saving/Impact: Explain how cooking this recipe will help the user save money by using the ingredients they already have and reducing food waste.
-*   Overall, what makes this recipe a good recommendation?
+*   **Urgency:** Based on the expiring ingredients, explain why it's a good idea to cook this soon.
+*   **Money Saving & Impact:** Explain how cooking this recipe helps save money by using up existing ingredients and reducing food waste.
+*   **Partial Usage:** Mention that it's a good match based on the inventory. If there are missing ingredients, briefly note what they might need to pick up.
+*   **Safety:** Check for allergens. If the recipe is safe, confirm it. If it contains allergens from the user's list, you MUST state this clearly.
 
-Format your response in a paragraph.
+Combine these points into a friendly, easy-to-read paragraph.
 `,
 });
 

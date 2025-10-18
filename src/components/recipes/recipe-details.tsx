@@ -14,7 +14,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { ThumbsUp, ThumbsDown, Sparkles } from "lucide-react";
+import { ThumbsUp, ThumbsDown, Sparkles, ChefHat } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { Recipe, UserPreferences, InventoryItem } from "@/lib/types";
 import { PlaceHolderImages } from "@/lib/placeholder-images";
@@ -28,6 +28,7 @@ interface RecipeDetailsProps {
   inventory: InventoryItem[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCookRecipe: (recipe: Recipe) => void;
 }
 
 export default function RecipeDetails({
@@ -36,6 +37,7 @@ export default function RecipeDetails({
   inventory,
   open,
   onOpenChange,
+  onCookRecipe,
 }: RecipeDetailsProps) {
   const { toast } = useToast();
   const [explanation, setExplanation] = useState<string>("");
@@ -52,6 +54,15 @@ export default function RecipeDetails({
     }).map(item => item.name);
   }, [inventory, recipe.ingredients]);
 
+  const missingIngredients = useMemo(() => {
+    const inventoryMap = new Map(
+      inventory.map(item => [item.name.toLowerCase(), item.quantity])
+    );
+    return recipe.ingredients.filter(
+      (ing) => (inventoryMap.get(ing.name.toLowerCase()) || 0) < ing.quantity
+    );
+  }, [inventory, recipe.ingredients]);
+
   useEffect(() => {
     if (recipe) {
       setIsLoadingExplanation(true);
@@ -63,6 +74,7 @@ export default function RecipeDetails({
           expiringIngredients: expiringIngredients,
           allergies: userPreferences.allergies,
           inventoryMatchPercentage: recipe.matchPercentage || 0,
+          missingIngredients: missingIngredients.map(i => i.name),
         });
         setExplanation(result.explanation);
         setIsLoadingExplanation(false);
@@ -70,7 +82,7 @@ export default function RecipeDetails({
 
       fetchExplanation();
     }
-  }, [recipe, expiringIngredients, userPreferences]);
+  }, [recipe, expiringIngredients, userPreferences, missingIngredients]);
 
   const handleFeedback = async (feedbackType: "upvote" | "downvote") => {
     if (feedbackSubmitted) return;
@@ -89,11 +101,19 @@ export default function RecipeDetails({
     });
   };
 
+  const handleCookClick = () => {
+    onCookRecipe(recipe);
+    toast({
+      title: "Bon Appétit!",
+      description: `Your inventory has been updated after cooking ${recipe.title}.`,
+    });
+  }
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="sm:max-w-2xl w-full p-0">
         <ScrollArea className="h-full">
-          <div className="pb-16">
+          <div className="pb-32">
             <SheetHeader className="relative">
               {image && (
                 <Image
@@ -148,7 +168,11 @@ export default function RecipeDetails({
               </div>
             </div>
           </div>
-          <SheetFooter className="absolute bottom-0 left-0 right-0 bg-background/80 backdrop-blur-sm p-4 border-t">
+          <SheetFooter className="absolute bottom-0 left-0 right-0 bg-background/80 backdrop-blur-sm p-4 border-t flex-col sm:flex-col items-start gap-4">
+             <Button className="w-full sm:w-auto" size="lg" onClick={handleCookClick}>
+                <ChefHat className="mr-2 h-5 w-5" />
+                Cooked this Recipe
+             </Button>
             <div className="flex w-full justify-between items-center">
                 <span className="text-sm font-medium text-muted-foreground">Was this recommendation helpful?</span>
                 <div className="flex gap-2">
