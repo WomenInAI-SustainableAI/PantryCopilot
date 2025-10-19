@@ -1,15 +1,16 @@
 """
 FastAPI Application for PantryCopilot
-Provides AI-powered recipe recommendation APIs
+Provides AI-powered recipe recommendation APIs with full CRUD operations
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Dict, Optional
 import uvicorn
 import os
 from dotenv import load_dotenv
 
+# AI Flows
 from src.ai.flows.explain_recipe_recommendation import (
     explain_recipe_recommendation,
     ExplainRecipeRecommendationOutput
@@ -18,6 +19,24 @@ from src.ai.flows.improve_recommendations_from_feedback import (
     improve_recommendations_from_feedback,
     ImproveRecommendationsFromFeedbackOutput,
     FeedbackType
+)
+
+# Database Models
+from src.db.models import (
+    UserCreate, User,
+    AllergyCreate, Allergy,
+    InventoryItem, InventoryItemUpdate,
+    UserFeedbackCreate, UserFeedback
+)
+
+# CRUD Operations
+from src.db.crud import users, allergies, inventory, feedback
+
+# Services
+from src.services.inventory_service import add_inventory_item, subtract_inventory_items, get_expiring_soon
+from src.services.recommendation_service import (
+    get_personalized_recommendations,
+    get_recommendations_by_preferences
 )
 
 # Load environment variables
@@ -140,6 +159,237 @@ async def api_process_feedback(
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing feedback: {str(e)}")
+
+
+# ========== USER ENDPOINTS ==========
+
+@app.post("/api/users", response_model=User, status_code=201)
+async def create_user(user_data: UserCreate):
+    """Create a new user."""
+    return await users.create_user(user_data)
+
+
+@app.get("/api/users/{user_id}", response_model=User)
+async def get_user(user_id: str):
+    """Get user by ID."""
+    user = await users.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+# ========== ALLERGY ENDPOINTS ==========
+
+@app.post("/api/users/{user_id}/allergies", response_model=Allergy, status_code=201)
+async def add_allergy(user_id: str, allergy_data: AllergyCreate):
+    """Add an allergy for a user."""
+    return await allergies.create_allergy(user_id, allergy_data)
+
+
+@app.get("/api/users/{user_id}/allergies", response_model=List[Allergy])
+async def list_allergies(user_id: str):
+    """Get all allergies for a user."""
+    return await allergies.get_user_allergies(user_id)
+
+
+@app.delete("/api/users/{user_id}/allergies/{allergy_id}", status_code=204)
+async def remove_allergy(user_id: str, allergy_id: str):
+    """Delete an allergy."""
+    await allergies.delete_allergy(user_id, allergy_id)
+    return None
+
+
+# ========== INVENTORY ENDPOINTS ==========
+
+class AddInventoryRequest(BaseModel):
+    """Request model for adding inventory with auto-calculated expiry."""
+    item_name: str = Field(..., description="Name of the item")
+    quantity: float = Field(..., gt=0, description="Quantity")
+    unit: Optional[str] = Field("piece", description="Unit of measurement")
+
+
+@app.post("/api/users/{user_id}/inventory", response_model=InventoryItem, status_code=201)
+async def add_inventory(user_id: str, item_data: AddInventoryRequest):
+    """
+    Add inventory item with AUTO-CALCULATED expiry date.
+    Expiry is calculated based on item type and quantity.
+    """
+    return await add_inventory_item(
+        user_id=user_id,
+        item_name=item_data.item_name,
+        quantity=item_data.quantity,
+        unit=item_data.unit
+    )
+
+
+@app.get("/api/users/{user_id}/inventory", response_model=List[InventoryItem])
+async def list_inventory(user_id: str):
+    """Get all inventory items for a user."""
+    return await inventory.get_user_inventory(user_id)
+
+
+@app.get("/api/users/{user_id}/inventory/expiring", response_model=List[InventoryItem])
+async def list_expiring_inventory(
+    user_id: str,
+    days: int = Query(3, description="Number of days to look ahead")
+):
+    """Get inventory items expiring within specified days."""
+    return await get_expiring_soon(user_id, days)
+
+
+@app.put("/api/users/{user_id}/inventory/{item_id}", response_model=InventoryItem)
+async def update_inventory(
+    user_id: str,
+    item_id: str,
+    update_data: InventoryItemUpdate
+):
+    """Update an inventory item."""
+    return await inventory.update_inventory_item(user_id, item_id, update_data)
+
+
+@app.delete("/api/users/{user_id}/inventory/{item_id}", status_code=204)
+async def delete_inventory(user_id: str, item_id: str):
+    """Delete an inventory item."""
+    await inventory.delete_inventory_item(user_id, item_id)
+    return None
+
+
+# ========== RECIPE RECOMMENDATION ENDPOINTS ==========
+
+@app.get("/api/users/{user_id}/recommendations")
+async def get_recommendations(
+    user_id: str,
+    limit: int = Query(10, description="Number of recommendations")
+):
+    """
+    Get personalized recipe recommendations.
+    
+    Features:
+    - Auto inventory matching
+    - Expiring ingredient prioritization
+    - Allergen filtering
+    - AI-generated explanations
+    - Feedback-based learning
+    """
+    recommendations = await get_personalized_recommendations(user_id, limit)
+    return {
+        "user_id": user_id,
+        "count": len(recommendations),
+        "recommendations": recommendations
+    }
+
+
+@app.get("/api/users/{user_id}/recommendations/filtered")
+async def get_filtered_recommendations(
+    user_id: str,
+    cuisine: Optional[str] = Query(None, description="Cuisine type filter"),
+    diet: Optional[str] = Query(None, description="Diet type filter"),
+    limit: int = Query(10, description="Number of recommendations")
+):
+    """Get recipe recommendations with additional filters."""
+    recommendations = await get_recommendations_by_preferences(
+        user_id=user_id,
+        cuisine=cuisine,
+        diet=diet,
+        number_of_recipes=limit
+    )
+    return {
+        "user_id": user_id,
+        "filters": {"cuisine": cuisine, "diet": diet},
+        "count": len(recommendations),
+        "recommendations": recommendations
+    }
+
+
+# ========== RECIPE COOKING / "COOKED" BUTTON ==========
+
+class CookedRecipeRequest(BaseModel):
+    """Request model for marking a recipe as cooked."""
+    recipe_id: str = Field(..., description="Spoonacular recipe ID")
+    servings_made: int = Field(1, description="Number of servings made")
+
+
+@app.post("/api/users/{user_id}/recipes/cooked")
+async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
+    """
+    Mark recipe as cooked - AUTOMATICALLY SUBTRACTS INGREDIENTS FROM INVENTORY.
+    
+    This endpoint:
+    1. Fetches recipe ingredient quantities from Spoonacular
+    2. Adjusts quantities based on servings made
+    3. Subtracts ingredients from user inventory
+    4. Returns status of each ingredient update
+    """
+    from src.services.spoonacular_service import get_recipe_ingredients_by_id
+    
+    # Get recipe ingredients with quantities
+    recipe_ingredients_data = await get_recipe_ingredients_by_id(int(request.recipe_id))
+    
+    # Extract ingredient quantities
+    ingredient_quantities = {}
+    for ingredient in recipe_ingredients_data.get("ingredients", []):
+        name = ingredient.get("name", "")
+        amount = ingredient.get("amount", {}).get("metric", {}).get("value", 0)
+        
+        # Adjust for servings
+        # Assuming recipe is for default servings, scale proportionally
+        adjusted_amount = amount * request.servings_made
+        
+        if name and adjusted_amount > 0:
+            ingredient_quantities[name] = adjusted_amount
+    
+    # Subtract from inventory
+    results = await subtract_inventory_items(user_id, ingredient_quantities)
+    
+    return {
+        "recipe_id": request.recipe_id,
+        "servings_made": request.servings_made,
+        "inventory_updates": results,
+        "message": "Inventory updated successfully"
+    }
+
+
+# ========== FEEDBACK ENDPOINTS ==========
+
+@app.post("/api/users/{user_id}/feedback", response_model=UserFeedback, status_code=201)
+async def submit_feedback(user_id: str, feedback_data: UserFeedbackCreate):
+    """
+    Submit feedback for a recipe (upvote, downvote, skip).
+    This feedback is used for reinforcement learning to improve recommendations.
+    """
+    # Save feedback to database
+    feedback_record = await feedback.create_feedback(user_id, feedback_data)
+    
+    # Process feedback through AI flow for learning
+    try:
+        await improve_recommendations_from_feedback(
+            recipe_id=feedback_data.recipe_id,
+            feedback_type=feedback_data.feedback_type.value,
+            user_id=user_id
+        )
+    except Exception as e:
+        print(f"Error processing feedback through AI: {e}")
+    
+    return feedback_record
+
+
+@app.get("/api/users/{user_id}/feedback", response_model=List[UserFeedback])
+async def get_feedback_history(user_id: str):
+    """Get all feedback submitted by a user."""
+    return await feedback.get_user_feedback(user_id)
+
+
+# ========== RECIPE DETAILS ENDPOINT ==========
+
+@app.get("/api/recipes/{recipe_id}")
+async def get_recipe_details(recipe_id: int):
+    """
+    Get detailed information about a specific recipe from Spoonacular.
+    """
+    from src.services.spoonacular_service import get_recipe_information
+    
+    recipe_info = await get_recipe_information(recipe_id)
+    return recipe_info
 
 
 # Run the application
