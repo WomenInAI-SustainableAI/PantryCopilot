@@ -2,10 +2,16 @@
 Inventory Service - Business logic for inventory management
 Auto-calculates expiry dates based on quantity
 """
-from datetime import datetime, timedelta, date
-from typing import Dict, Optional
-from src.db.crud.inventory import InventoryCRUD
-from src.db.models import InventoryItemCreate, InventoryItem
+from datetime import datetime, timedelta
+from typing import Dict, Optional, List
+from src.db.crud import (
+    create_inventory_item,
+    get_user_inventory,
+    update_inventory_item,
+    delete_inventory_item,
+    get_expiring_items
+)
+from src.db.models import InventoryItemCreate, InventoryItem, InventoryItemUpdate
 
 
 # Default shelf life for common items (in days)
@@ -69,16 +75,17 @@ SHELF_LIFE_DEFAULTS: Dict[str, int] = {
 }
 
 
-def calculate_expiry_date(item_name: str, quantity: float) -> date:
+def calculate_expiry_date(item_name: str, quantity: float) -> datetime:
     """
     Calculate expiry date based on item name and quantity.
+    Returns datetime object (not date) for Firestore compatibility.
     
     Args:
         item_name: Name of the inventory item
         quantity: Quantity of the item
         
     Returns:
-        Calculated expiry date
+        Calculated expiry date as datetime
     """
     # Normalize item name
     item_lower = item_name.lower().strip()
@@ -96,13 +103,13 @@ def calculate_expiry_date(item_name: str, quantity: float) -> date:
     if base_days <= 14 and quantity > 5:
         base_days = int(base_days * 0.8)
     
-    # Calculate expiry date
-    expiry = datetime.now().date() + timedelta(days=base_days)
+    # Calculate expiry date as datetime (not date) for Firestore compatibility
+    expiry = datetime.now() + timedelta(days=base_days)
     
     return expiry
 
 
-async def add_inventory_item(
+def add_inventory_item(
     user_id: str,
     item_name: str,
     quantity: float,
@@ -131,10 +138,10 @@ async def add_inventory_item(
         expiry_date=expiry_date
     )
     
-    return InventoryCRUD.create(user_id, item_data)
+    return create_inventory_item(user_id, item_data)
 
 
-async def subtract_inventory_items(
+def subtract_inventory_items(
     user_id: str,
     recipe_ingredients: Dict[str, float]
 ) -> Dict[str, str]:
@@ -149,7 +156,7 @@ async def subtract_inventory_items(
         Dictionary with status of each ingredient update
     """
     results = {}
-    inventory = InventoryCRUD.list_by_user(user_id)
+    inventory = get_user_inventory(user_id)
     
     for ingredient_name, quantity_used in recipe_ingredients.items():
         # Find matching inventory item
@@ -165,13 +172,12 @@ async def subtract_inventory_items(
             
             if new_quantity <= 0:
                 # Delete item if quantity is 0 or less
-                InventoryCRUD.delete(user_id, matching_item.id)
+                delete_inventory_item(user_id, matching_item.id)
                 results[ingredient_name] = "deleted (quantity depleted)"
             else:
                 # Update quantity
-                from src.db.models import InventoryItemUpdate
                 update_data = InventoryItemUpdate(quantity=new_quantity)
-                InventoryCRUD.update(user_id, matching_item.id, update_data)
+                update_inventory_item(user_id, matching_item.id, update_data)
                 results[ingredient_name] = f"updated (new quantity: {new_quantity})"
         else:
             results[ingredient_name] = "not found in inventory"
@@ -179,7 +185,7 @@ async def subtract_inventory_items(
     return results
 
 
-async def get_expiring_soon(user_id: str, days: int = 3) -> list[InventoryItem]:
+def get_expiring_soon(user_id: str, days: int = 3) -> List[InventoryItem]:
     """
     Get inventory items expiring within specified days.
     
@@ -190,5 +196,5 @@ async def get_expiring_soon(user_id: str, days: int = 3) -> list[InventoryItem]:
     Returns:
         List of expiring inventory items
     """
-    expiry_date = datetime.now().date() + timedelta(days=days)
-    return InventoryCRUD.get_expiring_items(user_id, expiry_date)
+    expiry_date = datetime.now() + timedelta(days=days)
+    return get_expiring_items(user_id, expiry_date)
