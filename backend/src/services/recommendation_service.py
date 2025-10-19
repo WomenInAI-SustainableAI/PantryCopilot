@@ -3,10 +3,10 @@ Recipe Recommendation Service
 Main service that orchestrates recipe recommendations with all features
 """
 from typing import List, Dict, Optional
-from src.db.crud.inventory import get_user_inventory
-from src.db.crud.allergies import get_user_allergies
-from src.db.crud.feedback import get_user_feedback
-from src.db.crud.recommendations import create_recommendation
+from src.db.crud.inventory import InventoryCRUD
+from src.db.crud.allergies import AllergyCRUD
+from src.db.crud.feedback import UserFeedbackCRUD
+from src.db.crud.recommendations import RecommendationCRUD
 from src.db.models import RecipeRecommendationCreate
 from src.services.spoonacular_service import (
     search_recipes_by_ingredients,
@@ -41,8 +41,8 @@ async def get_personalized_recommendations(
         List of recommended recipes with scores and explanations
     """
     # 1. Get user data
-    inventory = await get_user_inventory(user_id)
-    allergies = await get_user_allergies(user_id)
+    inventory = InventoryCRUD.list_by_user(user_id)
+    allergies = AllergyCRUD.list_by_user(user_id)
     expiring_items = await get_expiring_soon(user_id, days=3)
     
     if not inventory:
@@ -97,7 +97,7 @@ async def get_personalized_recommendations(
             continue
     
     # 5. Calculate feedback scores from historical data
-    feedback_history = await get_user_feedback(user_id)
+    feedback_history = UserFeedbackCRUD.list_by_user(user_id)
     feedback_scores = {}
     
     for feedback in feedback_history:
@@ -154,7 +154,7 @@ async def get_personalized_recommendations(
                 recommendation_score=scoring["overall_score"],
                 explanation=recipe["ai_explanation"]
             )
-            await create_recommendation(user_id, rec_data)
+            RecommendationCRUD.create(user_id, rec_data)
         except Exception as e:
             print(f"Error saving recommendation: {e}")
         
@@ -182,8 +182,8 @@ async def get_recommendations_by_preferences(
         List of filtered and ranked recipes
     """
     # Get user data
-    inventory = await get_user_inventory(user_id)
-    allergies = await get_user_allergies(user_id)
+    inventory = InventoryCRUD.list_by_user(user_id)
+    allergies = AllergyCRUD.list_by_user(user_id)
     
     if not inventory:
         return []
@@ -210,7 +210,7 @@ async def get_recommendations_by_preferences(
         recipe["ingredients"] = ingredients
     
     # Get feedback scores
-    feedback_history = await get_user_feedback(user_id)
+    feedback_history = UserFeedbackCRUD.list_by_user(user_id)
     feedback_scores = {}
     
     for feedback in feedback_history:

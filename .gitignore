@@ -43,7 +43,7 @@
 
 # Python
 /backend/venv/
-/backend/__pycache__/
+**/__pycache__
 /backend/*.py[cod]
 /backend/*$py.class
 /backend/*.so
@@ -57,6 +57,7 @@
 /backend/.eggs/
 /backend/lib64/
 /backend/parts/
+/backend/static/
 /backend/sdist/
 /backend/var/
 /backend/wheels/
