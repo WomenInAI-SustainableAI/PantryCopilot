@@ -68,4 +68,6 @@
 # firebase
 /backend/firebase-debug.log
 /backend/firestore-debug.log
-.gitignore
+/backend/firebase-service-account.json
+/backend/.env
+.env
