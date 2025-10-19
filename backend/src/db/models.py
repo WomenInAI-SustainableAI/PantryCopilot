@@ -3,7 +3,7 @@ Pydantic models for Firestore database collections
 """
 from pydantic import BaseModel, Field
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime
 from enum import Enum
 
 
@@ -77,7 +77,7 @@ class InventoryItemBase(BaseModel):
     item_name: str = Field(..., description="Name of the inventory item")
     quantity: float = Field(..., gt=0, description="Quantity of the item")
     unit: Optional[str] = Field("piece", description="Unit of measurement")
-    expiry_date: date = Field(..., description="Expiry date of the item")
+    expiry_date: datetime = Field(..., description="Expiry date of the item (as datetime for Firestore)")
 
 
 class InventoryItemCreate(InventoryItemBase):
@@ -90,7 +90,7 @@ class InventoryItemUpdate(BaseModel):
     item_name: Optional[str] = None
     quantity: Optional[float] = Field(None, gt=0)
     unit: Optional[str] = None
-    expiry_date: Optional[date] = None
+    expiry_date: Optional[datetime] = None
 
 
 class InventoryItem(InventoryItemBase):

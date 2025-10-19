@@ -205,3 +205,45 @@ class InventoryCRUD:
             count += 1
         
         return count
+
+
+# Convenience functions for easier imports
+async def create_inventory_item(user_id: str, item_data: InventoryItemCreate) -> InventoryItem:
+    """Create a new inventory item."""
+    return InventoryCRUD.create(user_id, item_data)
+
+
+async def get_inventory_item(user_id: str, item_id: str) -> Optional[InventoryItem]:
+    """Get a specific inventory item."""
+    return InventoryCRUD.get(user_id, item_id)
+
+
+async def get_user_inventory(user_id: str, limit: int = 100) -> List[InventoryItem]:
+    """List all inventory items for a user."""
+    return InventoryCRUD.list_by_user(user_id, limit)
+
+
+async def get_expiring_items(user_id: str, days: int = 3) -> List[InventoryItem]:
+    """Get items expiring within specified days."""
+    from datetime import timedelta
+    expiry_date = datetime.today() + timedelta(days=days)
+    return InventoryCRUD.get_expiring_items(user_id, expiry_date)
+
+
+async def update_inventory_item(
+    user_id: str,
+    item_id: str,
+    update_data: InventoryItemUpdate
+) -> Optional[InventoryItem]:
+    """Update an inventory item."""
+    return InventoryCRUD.update(user_id, item_id, update_data)
+
+
+async def delete_inventory_item(user_id: str, item_id: str) -> bool:
+    """Delete an inventory item."""
+    return InventoryCRUD.delete(user_id, item_id)
+
+
+async def delete_all_inventory(user_id: str) -> int:
+    """Delete all inventory items for a user."""
+    return InventoryCRUD.delete_all(user_id)
