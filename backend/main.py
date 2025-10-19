@@ -111,18 +111,62 @@ async def login_user(login_data: UserLogin):
     )
 
 
+# ========== AUTH ENDPOINTS ==========
+
+@app.post("/api/register", response_model=UserResponse, status_code=201)
+async def register_user(user_data: UserCreate):
+    """Register a new user."""
+    # Check if user already exists
+    existing_user = get_user_by_email(user_data.email)
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Hash password and create user
+    hashed_password = hash_password(user_data.password)
+    user_dict = {
+        "email": user_data.email,
+        "name": user_data.name,
+        "password_hash": hashed_password
+    }
+    
+    user = create_user_with_password(user_dict)
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        created_at=user.created_at,
+        updated_at=user.updated_at
+    )
+
+
+@app.post("/api/login", response_model=UserResponse)
+async def login_user(login_data: UserLogin):
+    """Login user."""
+    user = get_user_by_email(login_data.email)
+    if not user or not verify_password(login_data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        created_at=user.created_at,
+        updated_at=user.updated_at
+    )
+
+
 # ========== USER ENDPOINTS ==========
 
 @app.post("/api/users", response_model=User, status_code=201)
 async def create_user(user_data: UserCreate):
     """Create a new user."""
-    return await users.create_user(user_data)
+    return users.create(user_data)
 
 
 @app.get("/api/users/{user_id}", response_model=User)
 async def get_user(user_id: str):
     """Get user by ID."""
-    user = await users.get_user(user_id)
+    user = users.get(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return UserResponse(
