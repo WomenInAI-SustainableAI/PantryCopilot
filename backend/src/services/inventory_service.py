@@ -4,13 +4,7 @@ Auto-calculates expiry dates based on quantity
 """
 from datetime import datetime, timedelta, date
 from typing import Dict, Optional
-from src.db.crud.inventory import (
-    create_inventory_item,
-    get_user_inventory,
-    update_inventory_item,
-    delete_inventory_item,
-    get_expiring_items
-)
+from src.db.crud.inventory import InventoryCRUD
 from src.db.models import InventoryItemCreate, InventoryItem
 
 
@@ -137,7 +131,7 @@ async def add_inventory_item(
         expiry_date=expiry_date
     )
     
-    return await create_inventory_item(user_id, item_data)
+    return InventoryCRUD.create(user_id, item_data)
 
 
 async def subtract_inventory_items(
@@ -155,7 +149,7 @@ async def subtract_inventory_items(
         Dictionary with status of each ingredient update
     """
     results = {}
-    inventory = await get_user_inventory(user_id)
+    inventory = InventoryCRUD.list_by_user(user_id)
     
     for ingredient_name, quantity_used in recipe_ingredients.items():
         # Find matching inventory item
@@ -171,13 +165,13 @@ async def subtract_inventory_items(
             
             if new_quantity <= 0:
                 # Delete item if quantity is 0 or less
-                await delete_inventory_item(user_id, matching_item.id)
+                InventoryCRUD.delete(user_id, matching_item.id)
                 results[ingredient_name] = "deleted (quantity depleted)"
             else:
                 # Update quantity
                 from src.db.models import InventoryItemUpdate
                 update_data = InventoryItemUpdate(quantity=new_quantity)
-                await update_inventory_item(user_id, matching_item.id, update_data)
+                InventoryCRUD.update(user_id, matching_item.id, update_data)
                 results[ingredient_name] = f"updated (new quantity: {new_quantity})"
         else:
             results[ingredient_name] = "not found in inventory"
@@ -196,4 +190,5 @@ async def get_expiring_soon(user_id: str, days: int = 3) -> list[InventoryItem]:
     Returns:
         List of expiring inventory items
     """
-    return await get_expiring_items(user_id, days)
+    expiry_date = datetime.now().date() + timedelta(days=days)
+    return InventoryCRUD.get_expiring_items(user_id, expiry_date)

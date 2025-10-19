@@ -4,6 +4,7 @@ Provides AI-powered recipe recommendation APIs with full CRUD operations
 """
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 import uvicorn
@@ -59,6 +60,8 @@ app.add_middleware(
 )
 
 
+
+
 # Request models for API endpoints
 class ExplainRecipeRecommendationRequest(BaseModel):
     """Request schema for explaining recipe recommendations."""
@@ -83,21 +86,14 @@ class ImproveRecommendationsFromFeedbackRequest(BaseModel):
     user_id: str = Field(description="The ID of the user providing feedback")
 
 
-# Health check endpoint
-@app.get("/")
-async def root():
-    """Root endpoint - health check."""
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint."""
     return {
         "status": "healthy",
         "service": "PantryCopilot API",
         "version": "1.0.0"
     }
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy"}
 
 
 # Recipe Recommendation Explanation Endpoint
@@ -391,6 +387,11 @@ async def get_recipe_details(recipe_id: int):
     recipe_info = await get_recipe_information(recipe_id)
     return recipe_info
 
+
+# Serve static files (must be last to not override API routes)
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 # Run the application
 if __name__ == "__main__":
