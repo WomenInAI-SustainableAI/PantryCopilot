@@ -1,5 +1,4 @@
-# Firebase Studio
+# Pantry Copilot
 
-This is a NextJS starter in Firebase Studio.
-
-To get started, take a look at src/app/page.tsx.
+- Backend: Python, FastAPI
+- Frontend: React, Next.js
