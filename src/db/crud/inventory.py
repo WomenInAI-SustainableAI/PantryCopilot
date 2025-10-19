@@ -226,7 +226,7 @@ async def get_user_inventory(user_id: str, limit: int = 100) -> List[InventoryIt
 async def get_expiring_items(user_id: str, days: int = 3) -> List[InventoryItem]:
     """Get items expiring within specified days."""
     from datetime import timedelta
-    expiry_date = date.today() + timedelta(days=days)
+    expiry_date = datetime.today() + timedelta(days=days)
     return InventoryCRUD.get_expiring_items(user_id, expiry_date)
 
 

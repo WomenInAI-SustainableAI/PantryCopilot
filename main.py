@@ -10,17 +10,6 @@ import uvicorn
 import os
 from dotenv import load_dotenv
 
-# AI Flows
-# from src.ai.flows.explain_recipe_recommendation import (
-#     explain_recipe_recommendation,
-#     ExplainRecipeRecommendationOutput
-# )
-# from src.ai.flows.improve_recommendations_from_feedback import (
-#     improve_recommendations_from_feedback,
-#     ImproveRecommendationsFromFeedbackOutput,
-#     FeedbackType
-# )
-
 # Database Models
 from src.db.models import (
     UserCreate, User,
@@ -58,31 +47,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# Request models for API endpoints
-# class ExplainRecipeRecommendationRequest(BaseModel):
-#     """Request schema for explaining recipe recommendations."""
-#     recipe_name: str = Field(description="The name of the recipe being recommended")
-#     expiring_ingredients: List[str] = Field(
-#         default=[],
-#         description="A list of ingredients in the user inventory that are expiring soon"
-#     )
-#     allergies: List[str] = Field(
-#         default=[],
-#         description="A list of allergies the user has"
-#     )
-#     inventory_match_percentage: float = Field(
-#         description="The percentage of ingredients in the recipe that match the user inventory"
-#     )
-
-
-# class ImproveRecommendationsFromFeedbackRequest(BaseModel):
-#     """Request schema for processing user feedback."""
-#     recipe_id: str = Field(description="The ID of the recipe the user is providing feedback for")
-#     feedback_type: FeedbackType = Field(description="The type of feedback the user is providing")
-#     user_id: str = Field(description="The ID of the user providing feedback")
-
-
 # Health check endpoint
 @app.get("/")
 async def root():
@@ -99,67 +63,6 @@ async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
 
-
-# # Recipe Recommendation Explanation Endpoint
-# @app.post(
-#     "/api/explain-recommendation",
-#     response_model=ExplainRecipeRecommendationOutput,
-#     summary="Explain Recipe Recommendation",
-#     description="Get a detailed explanation of why a recipe is recommended based on inventory, allergies, and expiring ingredients"
-# )
-# async def api_explain_recommendation(
-#     input_data: ExplainRecipeRecommendationRequest
-# ) -> ExplainRecipeRecommendationOutput:
-    """
-    Explain why a specific recipe is recommended.
-    
-    Args:
-        input_data: Recipe details including name, expiring ingredients, allergies, and match percentage
-        
-    Returns:
-        Detailed explanation of the recommendation
-    """
-    pass
-    # try:
-    #     result = await explain_recipe_recommendation(
-    #         recipe_name=input_data.recipe_name,
-    #         expiring_ingredients=input_data.expiring_ingredients,
-    #         allergies=input_data.allergies,
-    #         inventory_match_percentage=input_data.inventory_match_percentage
-    #     )
-    #     return result
-    # except Exception as e:
-    #     raise HTTPException(status_code=500, detail=f"Error generating explanation: {str(e)}")
-
-
-# # Feedback Processing Endpoint
-# @app.post(
-#     "/api/process-feedback",
-#     response_model=ImproveRecommendationsFromFeedbackOutput,
-#     summary="Process User Feedback",
-#     description="Process user feedback (upvote, downvote, skip) to improve future recommendations"
-# )
-# async def api_process_feedback(
-#     input_data: ImproveRecommendationsFromFeedbackRequest
-# ) -> ImproveRecommendationsFromFeedbackOutput:
-    """
-    Process user feedback for a recipe recommendation.
-    
-    Args:
-        input_data: Feedback details including recipe ID, feedback type, and user ID
-        
-    Returns:
-        Success status and message about the feedback processing
-    """
-    # try:
-    #     result = await improve_recommendations_from_feedback(
-    #         recipe_id=input_data.recipe_id,
-    #         feedback_type=input_data.feedback_type.value,
-    #         user_id=input_data.user_id
-    #     )
-    #     return result
-    # except Exception as e:
-    #     raise HTTPException(status_code=500, detail=f"Error processing feedback: {str(e)}")
 
 
 # ========== USER ENDPOINTS ==========
@@ -340,7 +243,7 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
             ingredient_quantities[name] = adjusted_amount
     
     # Subtract from inventory
-    results = await subtract_inventory_items(user_id, ingredient_quantities)
+    results = subtract_inventory_items(user_id, ingredient_quantities)
     
     return {
         "recipe_id": request.recipe_id,
@@ -352,32 +255,32 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
 
 # ========== FEEDBACK ENDPOINTS ==========
 
-@app.post("/api/users/{user_id}/feedback", response_model=UserFeedback, status_code=201)
-async def submit_feedback(user_id: str, feedback_data: UserFeedbackCreate):
-    """
-    Submit feedback for a recipe (upvote, downvote, skip).
-    This feedback is used for reinforcement learning to improve recommendations.
-    """
-    # Save feedback to database
-    feedback_record = feedback.create(user_id, feedback_data)
+# @app.post("/api/users/{user_id}/feedback", response_model=UserFeedback, status_code=201)
+# async def submit_feedback(user_id: str, feedback_data: UserFeedbackCreate):
+#     """
+#     Submit feedback for a recipe (upvote, downvote, skip).
+#     This feedback is used for reinforcement learning to improve recommendations.
+#     """
+#     # Save feedback to database
+#     feedback_record = feedback.create(user_id, feedback_data)
     
-    # Process feedback through AI flow for learning
-    try:
-        await improve_recommendations_from_feedback(
-            recipe_id=feedback_data.recipe_id,
-            feedback_type=feedback_data.feedback_type.value,
-            user_id=user_id
-        )
-    except Exception as e:
-        print(f"Error processing feedback through AI: {e}")
+#     # Process feedback through AI flow for learning
+#     try:
+#         await improve_recommendations_from_feedback(
+#             recipe_id=feedback_data.recipe_id,
+#             feedback_type=feedback_data.feedback_type.value,
+#             user_id=user_id
+#         )
+#     except Exception as e:
+#         print(f"Error processing feedback through AI: {e}")
     
-    return feedback_record
+#     return feedback_record
 
 
-@app.get("/api/users/{user_id}/feedback", response_model=List[UserFeedback])
-async def get_feedback_history(user_id: str):
-    """Get all feedback submitted by a user."""
-    return feedback.list_by_user(user_id)
+# @app.get("/api/users/{user_id}/feedback", response_model=List[UserFeedback])
+# async def get_feedback_history(user_id: str):
+#     """Get all feedback submitted by a user."""
+#     return feedback.list_by_user(user_id)
 
 
 # ========== RECIPE DETAILS ENDPOINT ==========

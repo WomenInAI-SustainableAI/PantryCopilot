@@ -60,7 +60,7 @@ def calculate_expiry_urgency_score(
     Returns:
         Tuple of (urgency_score, expiring_ingredients_list)
     """
-    today = datetime.now().date()
+    today = datetime.now()
     expiring_ingredients = []
     urgency_score = 0.0
     
@@ -72,8 +72,17 @@ def calculate_expiry_urgency_score(
             if ingredient_lower in item.item_name.lower() or \
                item.item_name.lower() in ingredient_lower:
                 
+                # Convert expiry_date to datetime if it's a date object
+                expiry_dt = item.expiry_date
+                if isinstance(expiry_dt, date) and not isinstance(expiry_dt, datetime):
+                    expiry_dt = datetime.combine(expiry_dt, datetime.min.time())
+                
+                # Remove timezone info if present to make comparison work
+                if hasattr(expiry_dt, 'tzinfo') and expiry_dt.tzinfo is not None:
+                    expiry_dt = expiry_dt.replace(tzinfo=None)
+                
                 # Calculate days until expiry
-                days_until_expiry = (item.expiry_date - today).days
+                days_until_expiry = (expiry_dt - today).days
                 
                 if days_until_expiry <= 3:
                     expiring_ingredients.append(item.item_name)

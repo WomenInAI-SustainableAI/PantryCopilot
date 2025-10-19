@@ -2,7 +2,7 @@
 Inventory Service - Business logic for inventory management
 Auto-calculates expiry dates based on quantity
 """
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 from src.db.crud import (
     create_inventory_item,
@@ -75,16 +75,17 @@ SHELF_LIFE_DEFAULTS: Dict[str, int] = {
 }
 
 
-def calculate_expiry_date(item_name: str, quantity: float) -> date:
+def calculate_expiry_date(item_name: str, quantity: float) -> datetime:
     """
     Calculate expiry date based on item name and quantity.
+    Returns datetime object (not date) for Firestore compatibility.
     
     Args:
         item_name: Name of the inventory item
         quantity: Quantity of the item
         
     Returns:
-        Calculated expiry date
+        Calculated expiry date as datetime
     """
     # Normalize item name
     item_lower = item_name.lower().strip()
@@ -102,8 +103,8 @@ def calculate_expiry_date(item_name: str, quantity: float) -> date:
     if base_days <= 14 and quantity > 5:
         base_days = int(base_days * 0.8)
     
-    # Calculate expiry date
-    expiry = datetime.now().date() + timedelta(days=base_days)
+    # Calculate expiry date as datetime (not date) for Firestore compatibility
+    expiry = datetime.now() + timedelta(days=base_days)
     
     return expiry
 
@@ -195,5 +196,5 @@ def get_expiring_soon(user_id: str, days: int = 3) -> List[InventoryItem]:
     Returns:
         List of expiring inventory items
     """
-    expiry_date = date.today() + timedelta(days=days)
+    expiry_date = datetime.now() + timedelta(days=days)
     return get_expiring_items(user_id, expiry_date)
