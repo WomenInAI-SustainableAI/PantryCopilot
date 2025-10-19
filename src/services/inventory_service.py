@@ -3,15 +3,15 @@ Inventory Service - Business logic for inventory management
 Auto-calculates expiry dates based on quantity
 """
 from datetime import datetime, timedelta, date
-from typing import Dict, Optional
-from src.db.crud.inventory import (
+from typing import Dict, Optional, List
+from src.db.crud import (
     create_inventory_item,
     get_user_inventory,
     update_inventory_item,
     delete_inventory_item,
     get_expiring_items
 )
-from src.db.models import InventoryItemCreate, InventoryItem
+from src.db.models import InventoryItemCreate, InventoryItem, InventoryItemUpdate
 
 
 # Default shelf life for common items (in days)
@@ -108,7 +108,7 @@ def calculate_expiry_date(item_name: str, quantity: float) -> date:
     return expiry
 
 
-async def add_inventory_item(
+def add_inventory_item(
     user_id: str,
     item_name: str,
     quantity: float,
@@ -137,10 +137,10 @@ async def add_inventory_item(
         expiry_date=expiry_date
     )
     
-    return await create_inventory_item(user_id, item_data)
+    return create_inventory_item(user_id, item_data)
 
 
-async def subtract_inventory_items(
+def subtract_inventory_items(
     user_id: str,
     recipe_ingredients: Dict[str, float]
 ) -> Dict[str, str]:
@@ -155,7 +155,7 @@ async def subtract_inventory_items(
         Dictionary with status of each ingredient update
     """
     results = {}
-    inventory = await get_user_inventory(user_id)
+    inventory = get_user_inventory(user_id)
     
     for ingredient_name, quantity_used in recipe_ingredients.items():
         # Find matching inventory item
@@ -171,13 +171,12 @@ async def subtract_inventory_items(
             
             if new_quantity <= 0:
                 # Delete item if quantity is 0 or less
-                await delete_inventory_item(user_id, matching_item.id)
+                delete_inventory_item(user_id, matching_item.id)
                 results[ingredient_name] = "deleted (quantity depleted)"
             else:
                 # Update quantity
-                from src.db.models import InventoryItemUpdate
                 update_data = InventoryItemUpdate(quantity=new_quantity)
-                await update_inventory_item(user_id, matching_item.id, update_data)
+                update_inventory_item(user_id, matching_item.id, update_data)
                 results[ingredient_name] = f"updated (new quantity: {new_quantity})"
         else:
             results[ingredient_name] = "not found in inventory"
@@ -185,7 +184,7 @@ async def subtract_inventory_items(
     return results
 
 
-async def get_expiring_soon(user_id: str, days: int = 3) -> list[InventoryItem]:
+def get_expiring_soon(user_id: str, days: int = 3) -> List[InventoryItem]:
     """
     Get inventory items expiring within specified days.
     
@@ -196,4 +195,5 @@ async def get_expiring_soon(user_id: str, days: int = 3) -> list[InventoryItem]:
     Returns:
         List of expiring inventory items
     """
-    return await get_expiring_items(user_id, days)
+    expiry_date = date.today() + timedelta(days=days)
+    return get_expiring_items(user_id, expiry_date)

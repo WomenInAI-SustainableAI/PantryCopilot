@@ -11,15 +11,15 @@ import os
 from dotenv import load_dotenv
 
 # AI Flows
-from src.ai.flows.explain_recipe_recommendation import (
-    explain_recipe_recommendation,
-    ExplainRecipeRecommendationOutput
-)
-from src.ai.flows.improve_recommendations_from_feedback import (
-    improve_recommendations_from_feedback,
-    ImproveRecommendationsFromFeedbackOutput,
-    FeedbackType
-)
+# from src.ai.flows.explain_recipe_recommendation import (
+#     explain_recipe_recommendation,
+#     ExplainRecipeRecommendationOutput
+# )
+# from src.ai.flows.improve_recommendations_from_feedback import (
+#     improve_recommendations_from_feedback,
+#     ImproveRecommendationsFromFeedbackOutput,
+#     FeedbackType
+# )
 
 # Database Models
 from src.db.models import (
@@ -60,27 +60,27 @@ app.add_middleware(
 
 
 # Request models for API endpoints
-class ExplainRecipeRecommendationRequest(BaseModel):
-    """Request schema for explaining recipe recommendations."""
-    recipe_name: str = Field(description="The name of the recipe being recommended")
-    expiring_ingredients: List[str] = Field(
-        default=[],
-        description="A list of ingredients in the user inventory that are expiring soon"
-    )
-    allergies: List[str] = Field(
-        default=[],
-        description="A list of allergies the user has"
-    )
-    inventory_match_percentage: float = Field(
-        description="The percentage of ingredients in the recipe that match the user inventory"
-    )
+# class ExplainRecipeRecommendationRequest(BaseModel):
+#     """Request schema for explaining recipe recommendations."""
+#     recipe_name: str = Field(description="The name of the recipe being recommended")
+#     expiring_ingredients: List[str] = Field(
+#         default=[],
+#         description="A list of ingredients in the user inventory that are expiring soon"
+#     )
+#     allergies: List[str] = Field(
+#         default=[],
+#         description="A list of allergies the user has"
+#     )
+#     inventory_match_percentage: float = Field(
+#         description="The percentage of ingredients in the recipe that match the user inventory"
+#     )
 
 
-class ImproveRecommendationsFromFeedbackRequest(BaseModel):
-    """Request schema for processing user feedback."""
-    recipe_id: str = Field(description="The ID of the recipe the user is providing feedback for")
-    feedback_type: FeedbackType = Field(description="The type of feedback the user is providing")
-    user_id: str = Field(description="The ID of the user providing feedback")
+# class ImproveRecommendationsFromFeedbackRequest(BaseModel):
+#     """Request schema for processing user feedback."""
+#     recipe_id: str = Field(description="The ID of the recipe the user is providing feedback for")
+#     feedback_type: FeedbackType = Field(description="The type of feedback the user is providing")
+#     user_id: str = Field(description="The ID of the user providing feedback")
 
 
 # Health check endpoint
@@ -100,16 +100,16 @@ async def health_check():
     return {"status": "healthy"}
 
 
-# Recipe Recommendation Explanation Endpoint
-@app.post(
-    "/api/explain-recommendation",
-    response_model=ExplainRecipeRecommendationOutput,
-    summary="Explain Recipe Recommendation",
-    description="Get a detailed explanation of why a recipe is recommended based on inventory, allergies, and expiring ingredients"
-)
-async def api_explain_recommendation(
-    input_data: ExplainRecipeRecommendationRequest
-) -> ExplainRecipeRecommendationOutput:
+# # Recipe Recommendation Explanation Endpoint
+# @app.post(
+#     "/api/explain-recommendation",
+#     response_model=ExplainRecipeRecommendationOutput,
+#     summary="Explain Recipe Recommendation",
+#     description="Get a detailed explanation of why a recipe is recommended based on inventory, allergies, and expiring ingredients"
+# )
+# async def api_explain_recommendation(
+#     input_data: ExplainRecipeRecommendationRequest
+# ) -> ExplainRecipeRecommendationOutput:
     """
     Explain why a specific recipe is recommended.
     
@@ -119,28 +119,29 @@ async def api_explain_recommendation(
     Returns:
         Detailed explanation of the recommendation
     """
-    try:
-        result = await explain_recipe_recommendation(
-            recipe_name=input_data.recipe_name,
-            expiring_ingredients=input_data.expiring_ingredients,
-            allergies=input_data.allergies,
-            inventory_match_percentage=input_data.inventory_match_percentage
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating explanation: {str(e)}")
+    pass
+    # try:
+    #     result = await explain_recipe_recommendation(
+    #         recipe_name=input_data.recipe_name,
+    #         expiring_ingredients=input_data.expiring_ingredients,
+    #         allergies=input_data.allergies,
+    #         inventory_match_percentage=input_data.inventory_match_percentage
+    #     )
+    #     return result
+    # except Exception as e:
+    #     raise HTTPException(status_code=500, detail=f"Error generating explanation: {str(e)}")
 
 
-# Feedback Processing Endpoint
-@app.post(
-    "/api/process-feedback",
-    response_model=ImproveRecommendationsFromFeedbackOutput,
-    summary="Process User Feedback",
-    description="Process user feedback (upvote, downvote, skip) to improve future recommendations"
-)
-async def api_process_feedback(
-    input_data: ImproveRecommendationsFromFeedbackRequest
-) -> ImproveRecommendationsFromFeedbackOutput:
+# # Feedback Processing Endpoint
+# @app.post(
+#     "/api/process-feedback",
+#     response_model=ImproveRecommendationsFromFeedbackOutput,
+#     summary="Process User Feedback",
+#     description="Process user feedback (upvote, downvote, skip) to improve future recommendations"
+# )
+# async def api_process_feedback(
+#     input_data: ImproveRecommendationsFromFeedbackRequest
+# ) -> ImproveRecommendationsFromFeedbackOutput:
     """
     Process user feedback for a recipe recommendation.
     
@@ -150,15 +151,15 @@ async def api_process_feedback(
     Returns:
         Success status and message about the feedback processing
     """
-    try:
-        result = await improve_recommendations_from_feedback(
-            recipe_id=input_data.recipe_id,
-            feedback_type=input_data.feedback_type.value,
-            user_id=input_data.user_id
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing feedback: {str(e)}")
+    # try:
+    #     result = await improve_recommendations_from_feedback(
+    #         recipe_id=input_data.recipe_id,
+    #         feedback_type=input_data.feedback_type.value,
+    #         user_id=input_data.user_id
+    #     )
+    #     return result
+    # except Exception as e:
+    #     raise HTTPException(status_code=500, detail=f"Error processing feedback: {str(e)}")
 
 
 # ========== USER ENDPOINTS ==========
@@ -166,13 +167,13 @@ async def api_process_feedback(
 @app.post("/api/users", response_model=User, status_code=201)
 async def create_user(user_data: UserCreate):
     """Create a new user."""
-    return await users.create_user(user_data)
+    return users.create(user_data)
 
 
 @app.get("/api/users/{user_id}", response_model=User)
 async def get_user(user_id: str):
     """Get user by ID."""
-    user = await users.get_user(user_id)
+    user = users.get(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
@@ -183,19 +184,19 @@ async def get_user(user_id: str):
 @app.post("/api/users/{user_id}/allergies", response_model=Allergy, status_code=201)
 async def add_allergy(user_id: str, allergy_data: AllergyCreate):
     """Add an allergy for a user."""
-    return await allergies.create_allergy(user_id, allergy_data)
+    return allergies.create(user_id, allergy_data)
 
 
 @app.get("/api/users/{user_id}/allergies", response_model=List[Allergy])
 async def list_allergies(user_id: str):
     """Get all allergies for a user."""
-    return await allergies.get_user_allergies(user_id)
+    return allergies.list_by_user(user_id)
 
 
 @app.delete("/api/users/{user_id}/allergies/{allergy_id}", status_code=204)
 async def remove_allergy(user_id: str, allergy_id: str):
     """Delete an allergy."""
-    await allergies.delete_allergy(user_id, allergy_id)
+    allergies.delete(user_id, allergy_id)
     return None
 
 
@@ -214,7 +215,7 @@ async def add_inventory(user_id: str, item_data: AddInventoryRequest):
     Add inventory item with AUTO-CALCULATED expiry date.
     Expiry is calculated based on item type and quantity.
     """
-    return await add_inventory_item(
+    return add_inventory_item(
         user_id=user_id,
         item_name=item_data.item_name,
         quantity=item_data.quantity,
@@ -225,7 +226,7 @@ async def add_inventory(user_id: str, item_data: AddInventoryRequest):
 @app.get("/api/users/{user_id}/inventory", response_model=List[InventoryItem])
 async def list_inventory(user_id: str):
     """Get all inventory items for a user."""
-    return await inventory.get_user_inventory(user_id)
+    return inventory.list_by_user(user_id)
 
 
 @app.get("/api/users/{user_id}/inventory/expiring", response_model=List[InventoryItem])
@@ -234,7 +235,7 @@ async def list_expiring_inventory(
     days: int = Query(3, description="Number of days to look ahead")
 ):
     """Get inventory items expiring within specified days."""
-    return await get_expiring_soon(user_id, days)
+    return get_expiring_soon(user_id, days)
 
 
 @app.put("/api/users/{user_id}/inventory/{item_id}", response_model=InventoryItem)
@@ -244,13 +245,13 @@ async def update_inventory(
     update_data: InventoryItemUpdate
 ):
     """Update an inventory item."""
-    return await inventory.update_inventory_item(user_id, item_id, update_data)
+    return inventory.update(user_id, item_id, update_data)
 
 
 @app.delete("/api/users/{user_id}/inventory/{item_id}", status_code=204)
 async def delete_inventory(user_id: str, item_id: str):
     """Delete an inventory item."""
-    await inventory.delete_inventory_item(user_id, item_id)
+    inventory.delete(user_id, item_id)
     return None
 
 
@@ -358,7 +359,7 @@ async def submit_feedback(user_id: str, feedback_data: UserFeedbackCreate):
     This feedback is used for reinforcement learning to improve recommendations.
     """
     # Save feedback to database
-    feedback_record = await feedback.create_feedback(user_id, feedback_data)
+    feedback_record = feedback.create(user_id, feedback_data)
     
     # Process feedback through AI flow for learning
     try:
@@ -376,7 +377,7 @@ async def submit_feedback(user_id: str, feedback_data: UserFeedbackCreate):
 @app.get("/api/users/{user_id}/feedback", response_model=List[UserFeedback])
 async def get_feedback_history(user_id: str):
     """Get all feedback submitted by a user."""
-    return await feedback.get_user_feedback(user_id)
+    return feedback.list_by_user(user_id)
 
 
 # ========== RECIPE DETAILS ENDPOINT ==========

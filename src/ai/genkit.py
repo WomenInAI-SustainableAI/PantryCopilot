@@ -1,6 +1,6 @@
-from flask.cli import load_dotenv
 from genkit.ai import Genkit
 from genkit.plugins.google_genai import GoogleAI
+from dotenv import load_dotenv
 
 import os
 
