@@ -9,3 +9,5 @@ firebase-admin>=6.5.0
 httpx>=0.28.1
 firebase-admin>=6.5.0
 google-cloud-firestore>=2.21.0
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0

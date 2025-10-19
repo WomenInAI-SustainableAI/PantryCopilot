@@ -24,14 +24,22 @@ from src.ai.flows.improve_recommendations_from_feedback import (
 
 # Database Models
 from src.db.models import (
-    UserCreate, User,
+    UserCreate, User, UserLogin, UserResponse,
     AllergyCreate, Allergy,
     InventoryItem, InventoryItemUpdate,
     UserFeedbackCreate, UserFeedback
 )
+from src.auth import hash_password, verify_password
 
 # CRUD Operations
 from src.db.crud import users, allergies, inventory, feedback
+
+# Add wrapper functions (remove async since CRUD methods are sync)
+def create_user_with_password(user_dict: dict):
+    return users.UserCRUD.create_with_password(user_dict)
+
+def get_user_by_email(email: str):
+    return users.UserCRUD.get_by_email(email)
 
 # Services
 from src.services.inventory_service import add_inventory_item, subtract_inventory_items, get_expiring_soon
@@ -157,21 +165,65 @@ async def api_process_feedback(
         raise HTTPException(status_code=500, detail=f"Error processing feedback: {str(e)}")
 
 
+# ========== AUTH ENDPOINTS ==========
+
+@app.post("/api/register", response_model=UserResponse, status_code=201)
+async def register_user(user_data: UserCreate):
+    """Register a new user."""
+    # Check if user already exists
+    existing_user = get_user_by_email(user_data.email)
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Hash password and create user
+    hashed_password = hash_password(user_data.password)
+    user_dict = {
+        "email": user_data.email,
+        "name": user_data.name,
+        "password_hash": hashed_password
+    }
+    
+    user = create_user_with_password(user_dict)
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        created_at=user.created_at,
+        updated_at=user.updated_at
+    )
+
+
+@app.post("/api/login", response_model=UserResponse)
+async def login_user(login_data: UserLogin):
+    """Login user."""
+    user = get_user_by_email(login_data.email)
+    if not user or not verify_password(login_data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        created_at=user.created_at,
+        updated_at=user.updated_at
+    )
+
+
 # ========== USER ENDPOINTS ==========
 
-@app.post("/api/users", response_model=User, status_code=201)
-async def create_user(user_data: UserCreate):
-    """Create a new user."""
-    return await users.create_user(user_data)
-
-
-@app.get("/api/users/{user_id}", response_model=User)
+@app.get("/api/users/{user_id}", response_model=UserResponse)
 async def get_user(user_id: str):
     """Get user by ID."""
-    user = await users.get_user(user_id)
+    user = users.UserCRUD.get(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return user
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        created_at=user.created_at,
+        updated_at=user.updated_at
+    )
 
 
 # ========== ALLERGY ENDPOINTS ==========

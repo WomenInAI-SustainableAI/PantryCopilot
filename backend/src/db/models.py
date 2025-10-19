@@ -23,12 +23,26 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     """Model for creating a new user."""
-    pass
+    password: str = Field(..., description="User password")
+
+
+class UserLogin(BaseModel):
+    """Model for user login."""
+    email: str = Field(..., description="User email address")
+    password: str = Field(..., description="User password")
+
+
+class UserResponse(UserBase):
+    """User response model without password."""
+    id: str = Field(..., description="User ID")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class User(UserBase):
     """User model with ID and timestamps."""
     id: str = Field(..., description="User ID")
+    password_hash: str = Field(..., description="Hashed password")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -33,9 +33,34 @@ class UserCRUD:
             "id": user_id,
             "email": user_data.email,
             "name": user_data.name,
+            "password_hash": user_data.password,  # This should be hashed before calling
             "created_at": now,
             "updated_at": now
         }
+        
+        db.collection(UserCRUD.COLLECTION).document(user_id).set(user_dict)
+        
+        return User(**user_dict)
+    
+    @staticmethod
+    def create_with_password(user_dict: dict) -> User:
+        """
+        Create a new user with pre-hashed password.
+        
+        Args:
+            user_dict: User data with hashed password
+            
+        Returns:
+            Created user
+        """
+        user_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+        
+        user_dict.update({
+            "id": user_id,
+            "created_at": now,
+            "updated_at": now
+        })
         
         db.collection(UserCRUD.COLLECTION).document(user_id).set(user_dict)
         

@@ -71,3 +71,7 @@
 /backend/firebase-service-account.json
 /backend/.env
 .env
+backend/src/__pycache__/*
+backend/src/ai/__pycache__/*
+backend/src/ai/__pycache__/*
+backend/src/ai/flows/__pycache__/*
