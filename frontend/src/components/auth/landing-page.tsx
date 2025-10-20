@@ -13,11 +13,13 @@ export default function LandingPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const { login, register } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSuccessMessage('');
     
     try {
       if (isLogin) {
@@ -28,6 +30,11 @@ export default function LandingPage() {
           return;
         }
         await register(email, name, password);
+        setSuccessMessage('Registration successful! Please sign in.');
+        setIsLogin(true);
+        setName('');
+        setPassword('');
+        setConfirmPassword('');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -82,6 +89,9 @@ export default function LandingPage() {
               {error && (
                 <p className="text-sm text-red-500">{error}</p>
               )}
+              {successMessage && (
+                <p className="text-sm text-green-500">{successMessage}</p>
+              )}
               <Button type="submit" className="w-full">
                 {isLogin ? 'Sign In' : 'Sign Up'}
               </Button>
@@ -90,7 +100,11 @@ export default function LandingPage() {
             <div className="text-center mt-4">
               <button
                 type="button"
-                onClick={() => setIsLogin(!isLogin)}
+                onClick={() => {
+                  setIsLogin(!isLogin);
+                  setError('');
+                  setSuccessMessage('');
+                }}
                 className="text-sm text-muted-foreground hover:text-primary"
               >
                 {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}

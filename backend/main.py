@@ -4,6 +4,7 @@ Provides AI-powered recipe recommendation APIs with full CRUD operations
 """
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 import uvicorn
@@ -21,13 +22,14 @@ from src.auth import hash_password, verify_password
 
 # CRUD Operations
 from src.db.crud import users, allergies, inventory, feedback
+from src.db.crud.users import UserCRUD
 
 # Add wrapper functions (remove async since CRUD methods are sync)
 def create_user_with_password(user_dict: dict):
-    return users.UserCRUD.create_with_password(user_dict)
+    return UserCRUD.create_with_password(user_dict)
 
 def get_user_by_email(email: str):
-    return users.UserCRUD.get_by_email(email)
+    return UserCRUD.get_by_email(email)
 
 # Services
 from src.services.inventory_service import add_inventory_item, subtract_inventory_items, get_expiring_soon
@@ -65,50 +67,6 @@ async def health_check():
         "version": "1.0.0"
     }
 
-
-
-# ========== AUTH ENDPOINTS ==========
-
-@app.post("/api/register", response_model=UserResponse, status_code=201)
-async def register_user(user_data: UserCreate):
-    """Register a new user."""
-    # Check if user already exists
-    existing_user = get_user_by_email(user_data.email)
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Hash password and create user
-    hashed_password = hash_password(user_data.password)
-    user_dict = {
-        "email": user_data.email,
-        "name": user_data.name,
-        "password_hash": hashed_password
-    }
-    
-    user = create_user_with_password(user_dict)
-    return UserResponse(
-        id=user.id,
-        email=user.email,
-        name=user.name,
-        created_at=user.created_at,
-        updated_at=user.updated_at
-    )
-
-
-@app.post("/api/login", response_model=UserResponse)
-async def login_user(login_data: UserLogin):
-    """Login user."""
-    user = get_user_by_email(login_data.email)
-    if not user or not verify_password(login_data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    return UserResponse(
-        id=user.id,
-        email=user.email,
-        name=user.name,
-        created_at=user.created_at,
-        updated_at=user.updated_at
-    )
 
 
 # ========== AUTH ENDPOINTS ==========
