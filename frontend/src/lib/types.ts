@@ -26,6 +26,23 @@ export interface Recipe {
   score?: number;
 }
 
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+}
+
+export interface LoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  email: string;
+  name: string;
+  password: string;
+}
+
 export interface UserPreferences {
   userId: string;
   allergies: string[];
