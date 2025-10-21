@@ -51,23 +51,64 @@ async def test_process_feedback():
         return False
 
 
+async def test_inventory_crud():
+    """Test inventory CRUD operations."""
+    print("\nTesting Inventory CRUD...")
+    
+    try:
+        from src.db.crud.inventory import create_inventory_item, get_user_inventory, delete_inventory_item
+        from src.db.models import InventoryItemCreate
+        from datetime import datetime, timedelta
+        
+        user_id = "test_user"
+        
+        # Create test item
+        item_data = InventoryItemCreate(
+            item_name="Test Tomatoes",
+            quantity=5.0,
+            unit="pieces",
+            expiry_date=datetime.utcnow() + timedelta(days=7)
+        )
+        
+        created_item = await create_inventory_item(user_id, item_data)
+        print(f"✓ Created item: {created_item.item_name}")
+        
+        # List items
+        items = await get_user_inventory(user_id)
+        print(f"✓ Found {len(items)} items in inventory")
+        
+        # Clean up
+        await delete_inventory_item(user_id, created_item.id)
+        print("✓ Cleaned up test item")
+        
+        return True
+    except Exception as e:
+        print(f"✗ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 async def main():
     """Main async function to run tests."""
     print("=" * 60)
     print("PantryCopilot API Tests")
     print("=" * 60)
     
-    # Check if API key is set
+    # Test inventory first (doesn't need API key)
+    test3 = await test_inventory_crud()
+    
+    # Check if API key is set for AI tests
     if not os.getenv("GOOGLE_API_KEY"):
         print("⚠ Warning: GOOGLE_API_KEY not set in .env file")
-        print("Please add your Google API key to the .env file to run the tests")
-        return
-    
-    test1 = await test_explain_recommendation()
-    test2 = await test_process_feedback()
+        print("Skipping AI tests - add your Google API key to run them")
+        test1 = test2 = True  # Skip AI tests
+    else:
+        test1 = await test_explain_recommendation()
+        test2 = await test_process_feedback()
     
     print("\n" + "=" * 60)
-    if test1 and test2:
+    if test1 and test2 and test3:
         print("✓ All tests passed!")
     else:
         print("✗ Some tests failed")

@@ -21,7 +21,8 @@ from src.db.models import (
 from src.auth import hash_password, verify_password
 
 # CRUD Operations
-from src.db.crud import users, allergies, inventory, feedback
+from src.db.crud import users, allergies, feedback
+from src.db.crud.inventory import InventoryCRUD
 from src.db.crud.users import UserCRUD
 
 # Add wrapper functions (remove async since CRUD methods are sync)
@@ -166,24 +167,64 @@ class AddInventoryRequest(BaseModel):
     unit: Optional[str] = Field("piece", description="Unit of measurement")
 
 
+def get_shelf_life_days(item_name: str) -> int:
+    #TODO: Improve using a separate datasource or ML model
+    """Get estimated shelf life in days based on item name."""
+    item_lower = item_name.lower()
+    
+    # Dairy products
+    if any(word in item_lower for word in ['milk', 'cheese', 'yogurt', 'cream', 'butter']):
+        return 7
+    # Fresh meat
+    elif any(word in item_lower for word in ['chicken', 'beef', 'pork', 'fish', 'meat']):
+        return 3
+    # Fresh vegetables
+    elif any(word in item_lower for word in ['lettuce', 'spinach', 'tomato', 'cucumber', 'carrot']):
+        return 5
+    # Fruits
+    elif any(word in item_lower for word in ['apple', 'banana', 'orange', 'berry', 'grape']):
+        return 7
+    # Bread
+    elif any(word in item_lower for word in ['bread', 'bun', 'roll']):
+        return 3
+    # Eggs
+    elif 'egg' in item_lower:
+        return 21
+    # Pantry staples
+    elif any(word in item_lower for word in ['rice', 'pasta', 'flour', 'oil', 'vinegar']):
+        return 365
+    # Default
+    else:
+        return 14
+
 @app.post("/api/users/{user_id}/inventory", response_model=InventoryItem, status_code=201)
 async def add_inventory(user_id: str, item_data: AddInventoryRequest):
     """
     Add inventory item with AUTO-CALCULATED expiry date.
-    Expiry is calculated based on item type and quantity.
+    Expiry is calculated based on item type.
     """
-    return add_inventory_item(
-        user_id=user_id,
+    from datetime import datetime, timedelta
+    from src.db.models import InventoryItemCreate
+    
+    # Calculate expiry date based on item type
+    shelf_life_days = get_shelf_life_days(item_data.item_name)
+    expiry_date = datetime.utcnow() + timedelta(days=shelf_life_days)
+    
+    # Create inventory item
+    inventory_create = InventoryItemCreate(
         item_name=item_data.item_name,
         quantity=item_data.quantity,
-        unit=item_data.unit
+        unit=item_data.unit or "piece",
+        expiry_date=expiry_date
     )
+    
+    return InventoryCRUD.create(user_id, inventory_create)
 
 
 @app.get("/api/users/{user_id}/inventory", response_model=List[InventoryItem])
 async def list_inventory(user_id: str):
     """Get all inventory items for a user."""
-    return inventory.list_by_user(user_id)
+    return InventoryCRUD.list_by_user(user_id)
 
 
 @app.get("/api/users/{user_id}/inventory/expiring", response_model=List[InventoryItem])
@@ -202,13 +243,13 @@ async def update_inventory(
     update_data: InventoryItemUpdate
 ):
     """Update an inventory item."""
-    return inventory.update(user_id, item_id, update_data)
+    return InventoryCRUD.update(user_id, item_id, update_data)
 
 
 @app.delete("/api/users/{user_id}/inventory/{item_id}", status_code=204)
 async def delete_inventory(user_id: str, item_id: str):
     """Delete an inventory item."""
-    inventory.delete(user_id, item_id)
+    InventoryCRUD.delete(user_id, item_id)
     return None
 
 

@@ -21,15 +21,17 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { InventoryItem } from "@/lib/types";
+import type { InventoryItem, InventoryFormItem } from "@/lib/types";
 import { addDays, differenceInDays, format } from "date-fns";
 import { Badge } from "../ui/badge";
 import { PlusCircle, Trash2 } from "lucide-react";
+import { addInventoryItem, deleteInventoryItem } from "@/app/actions";
+import { useAuth } from "@/lib/auth";
 
 interface InventoryDialogProps {
   children: React.ReactNode;
-  inventory: InventoryItem[];
-  onUpdateInventory: (inventory: InventoryItem[]) => void;
+  inventory: InventoryFormItem[];
+  onUpdateInventory: (inventory: InventoryFormItem[]) => void;
 }
 
 export default function InventoryDialog({
@@ -37,6 +39,7 @@ export default function InventoryDialog({
   inventory,
   onUpdateInventory,
 }: InventoryDialogProps) {
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [newItem, setNewItem] = useState({
     name: "",
@@ -46,43 +49,66 @@ export default function InventoryDialog({
     shelfLife: "",
   });
 
-  const handleAddItem = () => {
+  const handleAddItem = async () => {
     if (
       !newItem.name ||
       !newItem.quantity ||
       !newItem.unit ||
-      !newItem.purchaseDate ||
-      !newItem.shelfLife
+      !newItem.purchaseDate
     ) {
-      alert("Please fill all fields.");
+      alert("Please fill required fields.");
       return;
     }
 
-    const purchaseDate = new Date(newItem.purchaseDate);
-    const shelfLife = parseInt(newItem.shelfLife, 10);
-    const expiryDate = addDays(purchaseDate, shelfLife);
+    try {
+      const purchaseDate = new Date(newItem.purchaseDate);
+      const shelfLife = parseInt(newItem.shelfLife, 10);
+      const expiryDate = addDays(purchaseDate, shelfLife);
 
-    const newItemData: InventoryItem = {
-      id: `inv${inventory.length + 1}`,
-      name: newItem.name,
-      quantity: parseFloat(newItem.quantity),
-      unit: newItem.unit,
-      purchaseDate: purchaseDate.toISOString(),
-      expiryDate: expiryDate.toISOString(),
-      shelfLife,
-    };
-    onUpdateInventory([...inventory, newItemData]);
-    setNewItem({
-      name: "",
-      quantity: "",
-      unit: "",
-      purchaseDate: format(new Date(), "yyyy-MM-dd"),
-      shelfLife: "",
-    });
+      if (!user) throw new Error('User not authenticated');
+      const userId = user.id;
+      
+      const apiItem = await addInventoryItem(userId, {
+        item_name: newItem.name,
+        quantity: parseFloat(newItem.quantity),
+        unit: newItem.unit
+      });
+
+      // Convert API response to form format
+      const newItemData: InventoryFormItem = {
+        id: apiItem.id,
+        name: apiItem.item_name,
+        quantity: apiItem.quantity,
+        unit: apiItem.unit,
+        purchaseDate: purchaseDate.toISOString(),
+        expiryDate: apiItem.expiry_date,
+        shelfLife,
+      };
+      
+      onUpdateInventory([...inventory, newItemData]);
+      setNewItem({
+        name: "",
+        quantity: "",
+        unit: "",
+        purchaseDate: format(new Date(), "yyyy-MM-dd"),
+        shelfLife: "",
+      });
+    } catch (error) {
+      console.error('Failed to add inventory item:', error);
+      alert('Failed to add item. Please try again.');
+    }
   };
 
-  const handleRemoveItem = (id: string) => {
-    onUpdateInventory(inventory.filter((item) => item.id !== id));
+  const handleRemoveItem = async (id: string) => {
+    try {
+      if (!user) throw new Error('User not authenticated');
+      const userId = user.id;
+      await deleteInventoryItem(userId, id);
+      onUpdateInventory(inventory.filter((item) => item.id !== id));
+    } catch (error) {
+      console.error('Failed to delete inventory item:', error);
+      alert('Failed to delete item. Please try again.');
+    }
   };
 
   const getExpiryBadge = (expiryDate: string) => {
@@ -138,30 +164,28 @@ export default function InventoryDialog({
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-2">
-                <Label htmlFor="purchaseDate">Purchase Date</Label>
-                <Input
-                  id="purchaseDate"
-                  type="date"
-                  value={newItem.purchaseDate}
-                  onChange={(e) =>
-                    setNewItem({ ...newItem, purchaseDate: e.target.value })
-                  }
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="shelfLife">Shelf Life (days)</Label>
-                <Input
-                  id="shelfLife"
-                  type="number"
-                  value={newItem.shelfLife}
-                  onChange={(e) =>
-                    setNewItem({ ...newItem, shelfLife: e.target.value })
-                  }
-                  placeholder="e.g., 7"
-                />
-              </div>
+            <div className="space-y-2">
+              <Label htmlFor="purchaseDate">Purchase Date</Label>
+              <Input
+                id="purchaseDate"
+                type="date"
+                value={newItem.purchaseDate}
+                onChange={(e) =>
+                  setNewItem({ ...newItem, purchaseDate: e.target.value })
+                }
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="shelfLife">Shelf Life (days) - Optional</Label>
+              <Input
+                id="shelfLife"
+                type="number"
+                value={newItem.shelfLife}
+                onChange={(e) =>
+                  setNewItem({ ...newItem, shelfLife: e.target.value })
+                }
+                placeholder="Auto-calculated if empty"
+              />
             </div>
             <Button onClick={handleAddItem} className="w-full">
               <PlusCircle className="mr-2 h-4 w-4" /> Add Item

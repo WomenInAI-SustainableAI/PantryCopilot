@@ -1,11 +1,30 @@
 export interface InventoryItem {
   id: string;
+  item_name: string;
+  quantity: number;
+  unit: string;
+  expiry_date: string;
+  user_id: string;
+  added_at: string;
+  updated_at: string;
+}
+
+// Frontend-only interface for the form
+export interface InventoryFormItem {
+  id: string;
   name: string;
   quantity: number;
   unit: string;
   purchaseDate: string;
   expiryDate: string;
-  shelfLife: number; // in days
+  shelfLife: number;
+}
+
+// API request interfaces
+export interface AddInventoryRequest {
+  item_name: string;
+  quantity: number;
+  unit?: string;
 }
 
 export interface Ingredient {

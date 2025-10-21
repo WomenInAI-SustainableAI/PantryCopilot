@@ -48,7 +48,15 @@ async def get_personalized_recommendations(
     expiring_items = get_expiring_soon(user_id, days=3)
     
     if not inventory:
-        return []
+        # Return popular recipes for new users with no inventory
+        try:
+            popular_recipes = await search_recipes_complex(
+                number=number_of_recipes
+            )
+            return popular_recipes.get("results", [])
+        except Exception as e:
+            print(f"Error fetching popular recipes: {e}")
+            return []
     
     # 2. Extract ingredient names
     ingredient_names = [item.item_name for item in inventory]

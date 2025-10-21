@@ -5,6 +5,11 @@ Write-Host "Building PantryCopilot for deployment..." -ForegroundColor Green
 # Build frontend
 Write-Host "Building frontend..." -ForegroundColor Yellow
 Set-Location frontend
+
+# Clean previous builds to prevent Windows permission issues
+Remove-Item -Path ".next" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "out" -Recurse -Force -ErrorAction SilentlyContinue
+
 npm run build
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Frontend build failed!" -ForegroundColor Red

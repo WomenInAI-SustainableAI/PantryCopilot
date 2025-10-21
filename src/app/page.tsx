@@ -9,78 +9,23 @@ import {
 } from "@/components/ui/sidebar";
 import SidebarContent from "@/components/layout/sidebar-content";
 import Header from "@/components/layout/header";
-import type { InventoryFormItem, Recipe, UserPreferences, Ingredient } from "@/lib/types";
-import { initialUser } from "@/lib/data";
-import { getInventory } from "@/app/actions";
-import { useAuth } from "@/lib/auth";
+import type { InventoryItem, Recipe, UserPreferences } from "@/lib/types";
+import { initialInventory, initialRecipes, initialUser } from "@/lib/data";
 import RecipeDetails from "@/components/recipes/recipe-details";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import RecipeCard from "@/components/recipes/recipe-card";
 import { differenceInDays, formatDistanceToNow } from "date-fns";
 
-export default function Dashboard() {
-  const { user } = useAuth();
-  const [inventory, setInventory] = useState<InventoryFormItem[]>([]);
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
+export default function DashboardPage() {
+  const [inventory, setInventory] = useState<InventoryItem[]>(initialInventory);
+  const [recipes, setRecipes] = useState<Recipe[]>(initialRecipes);
   const [userPreferences, setUserPreferences] =
     useState<UserPreferences>(initialUser);
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
 
-  const handleUpdateInventory = (newInventory: InventoryFormItem[]) => {
+  const handleUpdateInventory = (newInventory: InventoryItem[]) => {
     setInventory(newInventory);
-  };
-
-  // Load inventory and recommendations from API
-  React.useEffect(() => {
-    const loadData = async () => {
-      if (!user) return;
-      
-      try {
-        // Load inventory
-        const apiInventory = await getInventory(user.id);
-        const formInventory: InventoryFormItem[] = apiInventory.map(item => ({
-          id: item.id,
-          name: item.item_name,
-          quantity: item.quantity,
-          unit: item.unit,
-          purchaseDate: item.added_at,
-          expiryDate: item.expiry_date,
-          shelfLife: 7
-        }));
-        setInventory(formInventory);
-        
-        // Load recommendations from API
-        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/users/${user.id}/recommendations`);
-        if (response.ok) {
-          const data = await response.json();
-          setRecipes(data.recommendations || []);
-        }
-      } catch (error) {
-        console.error('Failed to load data:', error);
-        setInventory([]);
-        setRecipes([]);
-      }
-    };
-    loadData();
-  }, [user]);
-
-  const handleCookRecipe = (recipe: Recipe) => {
-    const updatedInventory = inventory.map(invItem => {
-      const recipeIngredient = recipe.ingredients.find(
-        ing => ing.name.toLowerCase() === invItem.name.toLowerCase()
-      );
-      if (recipeIngredient) {
-        return {
-          ...invItem,
-          quantity: Math.max(0, invItem.quantity - recipeIngredient.quantity),
-        };
-      }
-      return invItem;
-    }).filter(item => item.quantity > 0);
-  
-    setInventory(updatedInventory);
-    setSelectedRecipe(null);
   };
 
   const handleUpdatePreferences = (newPreferences: UserPreferences) => {
@@ -100,49 +45,51 @@ export default function Dashboard() {
   }, [inventory]);
 
   const recommendedRecipes = useMemo(() => {
-    const inventoryMap = new Map(
-      inventory.map(item => [item.name.toLowerCase(), item])
-    );
-    const expiringSoonNames = new Set(
-      expiringSoonItems.map(i => i.name.toLowerCase())
-    );
-
-    const updatedRecipes = recipes.map(recipe => {
-      let weightedMatchSum = 0;
+    const updatedRecipes = recipes.map((recipe) => {
+      let matches = 0;
       let expiringMatches = 0;
-      let totalPossibleWeight = 0;
+      const recipeIngredients = new Set(
+        recipe.ingredients.map((i) => i.name.toLowerCase())
+      );
+      const inventoryNames = new Set(
+        inventory.map((i) => i.name.toLowerCase())
+      );
+      const expiringSoonNames = new Set(
+        expiringSoonItems.map((i) => i.name.toLowerCase())
+      );
 
-      (recipe.ingredients || []).forEach(ingredient => {
-        if (!ingredient?.name) return;
-        const inventoryItem = inventoryMap.get(ingredient.name.toLowerCase());
-        const weight = 1;
-        totalPossibleWeight += weight;
-
-        if (inventoryItem && ingredient.quantity) {
-          const quantityRatio = Math.min(inventoryItem.quantity / ingredient.quantity, 1.0);
-          weightedMatchSum += quantityRatio * weight;
-
-          if (expiringSoonNames.has(ingredient.name.toLowerCase())) {
+      for (const ingredient of recipeIngredients) {
+        if (inventoryNames.has(ingredient)) {
+          matches++;
+          if (expiringSoonNames.has(ingredient)) {
             expiringMatches++;
           }
         }
-      });
+      }
+
+      const matchPercentage =
+        recipe.ingredients.length > 0
+          ? Math.round((matches / recipe.ingredients.length) * 100)
+          : 0;
+
+      const expiringIngredientBonus =
+        expiringSoonItems.length > 0
+          ? (expiringMatches / expiringSoonItems.length) * 30
+          : 0;
       
-      const matchPercentage = totalPossibleWeight > 0 ? (weightedMatchSum / totalPossibleWeight) * 100 : 0;
-      const expiringIngredientBonus = expiringMatches * 10;
-      const score = matchPercentage + expiringIngredientBonus;
+      const score = matchPercentage * 0.7 + expiringIngredientBonus * 0.3;
 
       return {
         ...recipe,
-        matchPercentage: Math.round(matchPercentage),
+        matchPercentage,
         expiringIngredientsCount: expiringMatches,
         score,
       };
     });
 
     const filteredRecipes = updatedRecipes.filter((recipe) => {
-        const hasAllergens = (recipe.ingredients || []).some(ingredient => ingredient?.name && userPreferences.allergies.includes(ingredient.name.toLowerCase()));
-        const hasDislikes = (recipe.ingredients || []).some(ingredient => ingredient?.name && userPreferences.dislikes.includes(ingredient.name.toLowerCase()));
+        const hasAllergens = recipe.ingredients.some(ingredient => userPreferences.allergies.includes(ingredient.name.toLowerCase()));
+        const hasDislikes = recipe.ingredients.some(ingredient => userPreferences.dislikes.includes(ingredient.name.toLowerCase()));
         return !hasAllergens && !hasDislikes;
     });
 
@@ -177,21 +124,13 @@ export default function Dashboard() {
                 Recommended For You
               </h2>
               <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
-                {recommendedRecipes.length > 0 ? (
-                  recommendedRecipes.map((recipe) => (
-                    <RecipeCard
-                      key={recipe.id}
-                      recipe={recipe}
-                      onSelectRecipe={setSelectedRecipe}
-                    />
-                  ))
-                ) : (
-                  <div className="col-span-full text-center py-8">
-                    <p className="text-muted-foreground">
-                      Unable to load recommendations. Please try again later.
-                    </p>
-                  </div>
-                )}
+                {recommendedRecipes.map((recipe) => (
+                  <RecipeCard
+                    key={recipe.id}
+                    recipe={recipe}
+                    onSelectRecipe={setSelectedRecipe}
+                  />
+                ))}
               </div>
             </div>
             <div className="space-y-6">
@@ -233,7 +172,6 @@ export default function Dashboard() {
             inventory={inventory}
             open={!!selectedRecipe}
             onOpenChange={(isOpen) => !isOpen && setSelectedRecipe(null)}
-            onCookRecipe={handleCookRecipe}
           />
         )}
       </SidebarInset>

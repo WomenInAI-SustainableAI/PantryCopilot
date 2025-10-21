@@ -3,6 +3,8 @@ Spoonacular API Integration Service
 """
 import os
 import httpx
+import hashlib
+import time
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 
@@ -10,6 +12,43 @@ load_dotenv()
 
 SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY")
 SPOONACULAR_BASE_URL = "https://api.spoonacular.com"
+
+# Simple in-memory cache
+_cache = {}
+CACHE_DURATION = 3600  # 1 hour in seconds
+
+def _get_cache_key(url: str, params: dict) -> str:
+    """Generate cache key from URL and params."""
+    key_string = f"{url}_{sorted(params.items())}"
+    return hashlib.md5(key_string.encode()).hexdigest()
+
+def _get_cached_response(cache_key: str) -> Optional[dict]:
+    """Get cached response if still valid."""
+    if cache_key in _cache:
+        cached_data, timestamp = _cache[cache_key]
+        if time.time() - timestamp < CACHE_DURATION:
+            return cached_data
+        else:
+            del _cache[cache_key]
+    return None
+
+def _cache_response(cache_key: str, data: dict) -> None:
+    """Cache response with timestamp."""
+    _cache[cache_key] = (data, time.time())
+
+async def _make_cached_request(url: str, params: dict) -> dict:
+    """Make HTTP request with caching."""
+    cache_key = _get_cache_key(url, params)
+    cached_result = _get_cached_response(cache_key)
+    if cached_result is not None:
+        return cached_result
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        result = response.json()
+        _cache_response(cache_key, result)
+        return result
 
 
 async def search_recipes_by_ingredients(
@@ -43,10 +82,7 @@ async def search_recipes_by_ingredients(
         "ignorePantry": ignore_pantry
     }
     
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+    return await _make_cached_request(url, params)
 
 
 async def get_recipe_information(recipe_id: int) -> Dict:
@@ -69,10 +105,7 @@ async def get_recipe_information(recipe_id: int) -> Dict:
         "includeNutrition": False
     }
     
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+    return await _make_cached_request(url, params)
 
 
 async def get_recipe_ingredients_by_id(recipe_id: int) -> Dict:
@@ -94,10 +127,7 @@ async def get_recipe_ingredients_by_id(recipe_id: int) -> Dict:
         "apiKey": SPOONACULAR_API_KEY
     }
     
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+    return await _make_cached_request(url, params)
 
 
 async def search_recipes_complex(
@@ -144,7 +174,4 @@ async def search_recipes_complex(
     if intolerances:
         params["intolerances"] = ",".join(intolerances)
     
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+    return await _make_cached_request(url, params)
