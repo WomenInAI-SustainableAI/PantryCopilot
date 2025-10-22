@@ -12,6 +12,8 @@ class FeedbackType(str, Enum):
     UPVOTE = "upvote"
     DOWNVOTE = "downvote"
     SKIP = "skip"
+    COOKED = "cooked"
+    IGNORED = "ignored"
 
 
 # User Models

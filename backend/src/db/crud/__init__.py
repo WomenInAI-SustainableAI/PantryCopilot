@@ -8,6 +8,7 @@ from src.db.crud.inventory import InventoryCRUD
 from src.db.crud.recipes import RecipeCRUD
 from src.db.crud.feedback import UserFeedbackCRUD
 from src.db.crud.recommendations import RecommendationCRUD
+from src.db.crud.cmab_stats import CMABStatsCRUD
 
 # Simple aliases for easier imports
 users = UserCRUD
@@ -16,6 +17,7 @@ inventory = InventoryCRUD
 recipes = RecipeCRUD
 feedback = UserFeedbackCRUD
 recommendations = RecommendationCRUD
+cmab_stats = CMABStatsCRUD
 
 # Direct function aliases for common operations
 get_user = UserCRUD.get
@@ -48,12 +50,14 @@ __all__ = [
     "RecipeCRUD",
     "UserFeedbackCRUD",
     "RecommendationCRUD",
+    "CMABStatsCRUD",
     "users",
     "allergies",
     "inventory",
     "recipes",
     "feedback",
     "recommendations",
+    "cmab_stats",
     "get_user",
     "create_user",
     "update_user",

@@ -1,6 +1,7 @@
 """
 Recipe Recommendation Service
 Main service that orchestrates recipe recommendations with all features
+Including CMAB (Contextual Multi-Armed Bandit) for personalized category selection
 """
 from typing import List, Dict, Optional
 from src.db.crud import (
@@ -17,6 +18,8 @@ from src.services.spoonacular_service import (
 )
 from src.services.recipe_scoring_service import rank_recipes
 from src.services.inventory_service import get_expiring_soon
+from src.services.cmab_manager import cmab_manager
+from src.services.cmab_service import map_recipe_to_category
 # from src.ai.flows.explain_recipe_recommendation import explain_recipe_recommendation
 
 
@@ -25,15 +28,16 @@ async def get_personalized_recommendations(
     number_of_recipes: int = 10
 ) -> List[Dict]:
     """
-    Get personalized recipe recommendations for a user.
+    Get personalized recipe recommendations for a user using CMAB.
     
     This is the main recommendation function that:
     1. Gets user inventory and identifies expiring items
-    2. Gets user allergies for filtering
-    3. Searches recipes via Spoonacular
-    4. Scores and ranks recipes
-    5. Generates AI explanations
-    6. Saves recommendations to database
+    2. Uses CMAB to select preferred recipe categories
+    3. Gets user allergies for filtering
+    4. Searches recipes via Spoonacular filtered by preferred categories
+    5. Scores and ranks recipes
+    6. Generates AI explanations
+    7. Saves recommendations to database
     
     Args:
         user_id: User ID
@@ -50,12 +54,19 @@ async def get_personalized_recommendations(
     if not inventory:
         return []
     
-    # 2. Extract ingredient names
+    # 2. Get preferred categories using CMAB
+    preferred_categories = cmab_manager.get_category_recommendations(
+        user_id=user_id,
+        inventory=inventory,
+        n_categories=3  # Get top 3 preferred categories
+    )
+    
+    # 3. Extract ingredient names
     ingredient_names = [item.item_name for item in inventory]
     expiring_names = [item.item_name for item in expiring_items]
     allergen_names = [allergy.allergen for allergy in allergies]
     
-    # 3. Search recipes using Spoonacular
+    # 4. Search recipes using Spoonacular
     # First try with expiring ingredients to prioritize urgency
     recipes = []
     
@@ -81,7 +92,7 @@ async def get_personalized_recommendations(
             if recipe.get("id") not in existing_ids:
                 recipes.append(recipe)
         
-    # 4. Get detailed information for each recipe
+    # 5. Get detailed information for each recipe
     detailed_recipes = []
     for recipe in recipes[:number_of_recipes * 2]:  # Get more than needed for filtering
         try:
@@ -93,12 +104,16 @@ async def get_personalized_recommendations(
                 ingredients = [ing.get("name", "") for ing in recipe_info["extendedIngredients"]]
             
             recipe_info["ingredients"] = ingredients
+            
+            # Add category information for CMAB filtering
+            recipe_info["cmab_category"] = map_recipe_to_category(recipe_info)
+            
             detailed_recipes.append(recipe_info)
         except Exception as e:
             print(f"Error fetching recipe {recipe['id']}: {e}")
             continue
     
-    # 5. Calculate feedback scores from historical data
+    # 6. Calculate feedback scores from historical data
     feedback_history = get_user_feedback(user_id)
     feedback_scores = {}
     
@@ -107,15 +122,17 @@ async def get_personalized_recommendations(
         if recipe_id not in feedback_scores:
             feedback_scores[recipe_id] = 0.0
         
-        # Upvote: +2, Downvote: -3, Skip: -1
+        # Update scoring to match CMAB rewards: Upvote: +2, Downvote: -3, Skip: -1, Cooked: +5
         if feedback.feedback_type.value == "upvote":
             feedback_scores[recipe_id] += 2.0
         elif feedback.feedback_type.value == "downvote":
             feedback_scores[recipe_id] -= 3.0
         elif feedback.feedback_type.value == "skip":
             feedback_scores[recipe_id] -= 1.0
+        elif feedback.feedback_type.value == "cooked":
+            feedback_scores[recipe_id] += 5.0
     
-    # 6. Score and rank recipes
+    # 7. Score and rank recipes
     ranked_recipes = rank_recipes(
         recipes=detailed_recipes,
         user_inventory=inventory,
@@ -123,7 +140,22 @@ async def get_personalized_recommendations(
         feedback_scores=feedback_scores
     )
     
-    # 7. Generate AI explanations for top recipes
+    # 8. Boost recipes in preferred categories (CMAB integration)
+    for recipe in ranked_recipes:
+        recipe_category = recipe.get("cmab_category", "")
+        if recipe_category in preferred_categories:
+            # Boost score based on category preference rank
+            boost_multiplier = 1.0 + (0.2 * (3 - preferred_categories.index(recipe_category)))
+            recipe["scoring"]["overall_score"] *= boost_multiplier
+            recipe["scoring"]["cmab_boosted"] = True
+            recipe["scoring"]["preferred_category"] = recipe_category
+        else:
+            recipe["scoring"]["cmab_boosted"] = False
+    
+    # Re-sort after CMAB boost
+    ranked_recipes.sort(key=lambda x: x["scoring"]["overall_score"], reverse=True)
+    
+    # 9. Generate AI explanations for top recipes
     final_recommendations = []
     
     for recipe in ranked_recipes[:number_of_recipes]:
@@ -147,7 +179,16 @@ async def get_personalized_recommendations(
         #     print(f"Error generating explanation for {recipe['title']}: {e}")
         #     recipe["ai_explanation"] = "This recipe is recommended based on your inventory."
         
-        # 8. Save recommendation to database
+        # Default explanation
+        explanation_parts = [f"This recipe matches {scoring['match_percentage']:.0f}% of your inventory."]
+        if scoring.get("cmab_boosted"):
+            explanation_parts.append(f"It's from your preferred {scoring['preferred_category'].replace('_', ' ')} category.")
+        if scoring["expiring_ingredients"]:
+            explanation_parts.append(f"Uses expiring ingredients: {', '.join(scoring['expiring_ingredients'][:3])}.")
+        
+        recipe["ai_explanation"] = " ".join(explanation_parts)
+        
+        # 10. Save recommendation to database
         try:
             rec_data = RecipeRecommendationCreate(
                 recipe_id=str(recipe["id"]),

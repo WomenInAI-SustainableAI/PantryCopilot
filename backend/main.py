@@ -309,32 +309,73 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
 
 # ========== FEEDBACK ENDPOINTS ==========
 
-# @app.post("/api/users/{user_id}/feedback", response_model=UserFeedback, status_code=201)
-# async def submit_feedback(user_id: str, feedback_data: UserFeedbackCreate):
-#     """
-#     Submit feedback for a recipe (upvote, downvote, skip).
-#     This feedback is used for reinforcement learning to improve recommendations.
-#     """
-#     # Save feedback to database
-#     feedback_record = feedback.create(user_id, feedback_data)
+@app.post("/api/users/{user_id}/feedback", response_model=UserFeedback, status_code=201)
+async def submit_feedback(user_id: str, feedback_data: UserFeedbackCreate):
+    """
+    Submit feedback for a recipe (upvote, downvote, skip, cooked, ignored).
+    This feedback is used by CMAB to learn user preferences and improve recommendations.
     
-#     # Process feedback through AI flow for learning
-#     try:
-#         await improve_recommendations_from_feedback(
-#             recipe_id=feedback_data.recipe_id,
-#             feedback_type=feedback_data.feedback_type.value,
-#             user_id=user_id
-#         )
-#     except Exception as e:
-#         print(f"Error processing feedback through AI: {e}")
+    Feedback types and their rewards:
+    - cooked: +2 (highest reward, user actually made the recipe)
+    - upvote: +1 (positive signal)
+    - downvote: -1 (negative signal)
+    - skip/ignored: 0 (neutral)
+    """
+    from src.services.spoonacular_service import get_recipe_information
+    from src.services.cmab_manager import cmab_manager
     
-#     return feedback_record
+    # Save feedback to database
+    feedback_record = feedback.create(user_id, feedback_data)
+    
+    # Update CMAB with feedback
+    try:
+        # Get recipe information to determine category
+        recipe_info = await get_recipe_information(int(feedback_data.recipe_id))
+        
+        # Get user inventory for context
+        user_inventory = inventory.list_by_user(user_id)
+        
+        # Record feedback in CMAB
+        cmab_manager.record_feedback(
+            user_id=user_id,
+            recipe=recipe_info,
+            feedback_type=feedback_data.feedback_type.value,
+            inventory=user_inventory
+        )
+    except Exception as e:
+        print(f"Error updating CMAB with feedback: {e}")
+    
+    # # Process feedback through AI flow for learning (if available)
+    # try:
+    #     await improve_recommendations_from_feedback(
+    #         recipe_id=feedback_data.recipe_id,
+    #         feedback_type=feedback_data.feedback_type.value,
+    #         user_id=user_id
+    #     )
+    # except Exception as e:
+    #     print(f"Error processing feedback through AI: {e}")
+    
+    return feedback_record
 
 
-# @app.get("/api/users/{user_id}/feedback", response_model=List[UserFeedback])
-# async def get_feedback_history(user_id: str):
-#     """Get all feedback submitted by a user."""
-#     return feedback.list_by_user(user_id)
+@app.get("/api/users/{user_id}/feedback", response_model=List[UserFeedback])
+async def get_feedback_history(user_id: str):
+    """Get all feedback submitted by a user."""
+    return feedback.list_by_user(user_id)
+
+
+@app.get("/api/users/{user_id}/preferences")
+async def get_user_preferences(user_id: str):
+    """
+    Get user's learned preferences from CMAB.
+    
+    Returns information about which recipe categories the user prefers
+    based on their historical feedback.
+    """
+    from src.services.cmab_manager import cmab_manager
+    
+    preferences = cmab_manager.get_user_preferences_summary(user_id)
+    return preferences
 
 
 # ========== RECIPE DETAILS ENDPOINT ==========
