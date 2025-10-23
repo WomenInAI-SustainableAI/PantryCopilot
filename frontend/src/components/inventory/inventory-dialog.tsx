@@ -24,8 +24,8 @@ import {
 import type { InventoryItem, InventoryFormItem } from "@/lib/types";
 import { addDays, differenceInDays, format } from "date-fns";
 import { Badge } from "../ui/badge";
-import { PlusCircle, Trash2 } from "lucide-react";
-import { addInventoryItem, deleteInventoryItem } from "@/app/actions";
+import { PlusCircle, Trash2, Edit } from "lucide-react";
+import { addInventoryItem, deleteInventoryItem, updateInventoryItem } from "@/app/actions";
 import { useAuth } from "@/lib/auth";
 
 interface InventoryDialogProps {
@@ -41,6 +41,7 @@ export default function InventoryDialog({
 }: InventoryDialogProps) {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<InventoryFormItem | null>(null);
   const [newItem, setNewItem] = useState({
     name: "",
     quantity: "",
@@ -49,7 +50,7 @@ export default function InventoryDialog({
     shelfLife: "",
   });
 
-  const handleAddItem = async () => {
+  const handleSaveItem = async () => {
     if (
       !newItem.name ||
       !newItem.quantity ||
@@ -68,24 +69,42 @@ export default function InventoryDialog({
       if (!user) throw new Error('User not authenticated');
       const userId = user.id;
       
-      const apiItem = await addInventoryItem(userId, {
-        item_name: newItem.name,
-        quantity: parseFloat(newItem.quantity),
-        unit: newItem.unit
-      });
+      if (editingItem) {
+        // Update existing item via API
+        const updatedItem = await updateInventoryItem(userId, editingItem.id, {
+          item_name: newItem.name,
+          quantity: parseFloat(newItem.quantity),
+          unit: newItem.unit
+        });
+        
+        const updatedInventory = inventory.map(item => 
+          item.id === editingItem.id 
+            ? { ...item, name: updatedItem.item_name, quantity: updatedItem.quantity, unit: updatedItem.unit }
+            : item
+        );
+        onUpdateInventory(updatedInventory);
+      } else {
+        // Add new item
+        const apiItem = await addInventoryItem(userId, {
+          item_name: newItem.name,
+          quantity: parseFloat(newItem.quantity),
+          unit: newItem.unit,
+          purchase_date: newItem.purchaseDate,
+          shelf_life_days: newItem.shelfLife ? parseInt(newItem.shelfLife) : undefined
+        });
 
-      // Convert API response to form format
-      const newItemData: InventoryFormItem = {
-        id: apiItem.id,
-        name: apiItem.item_name,
-        quantity: apiItem.quantity,
-        unit: apiItem.unit,
-        purchaseDate: purchaseDate.toISOString(),
-        expiryDate: apiItem.expiry_date,
-        shelfLife,
-      };
-      
-      onUpdateInventory([...inventory, newItemData]);
+        const newItemData: InventoryFormItem = {
+          id: apiItem.id,
+          name: apiItem.item_name,
+          quantity: apiItem.quantity,
+          unit: apiItem.unit,
+          purchaseDate: purchaseDate.toISOString(),
+          expiryDate: apiItem.expiry_date,
+          shelfLife,
+        };
+        
+        onUpdateInventory([...inventory, newItemData]);
+      }
       setNewItem({
         name: "",
         quantity: "",
@@ -93,6 +112,7 @@ export default function InventoryDialog({
         purchaseDate: format(new Date(), "yyyy-MM-dd"),
         shelfLife: "",
       });
+      setEditingItem(null);
     } catch (error) {
       console.error('Failed to add inventory item:', error);
       alert('Failed to add item. Please try again.');
@@ -131,7 +151,7 @@ export default function InventoryDialog({
         </DialogHeader>
         <div className="grid md:grid-cols-3 gap-8 py-4">
           <div className="md:col-span-1 space-y-4">
-            <h3 className="font-semibold font-headline">Add New Item</h3>
+            <h3 className="font-semibold font-headline">{editingItem ? 'Edit Item' : 'Add New Item'}</h3>
             <div className="space-y-2">
               <Label htmlFor="name">Item Name</Label>
               <Input
@@ -187,9 +207,20 @@ export default function InventoryDialog({
                 placeholder="Auto-calculated if empty"
               />
             </div>
-            <Button onClick={handleAddItem} className="w-full">
-              <PlusCircle className="mr-2 h-4 w-4" /> Add Item
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={handleSaveItem} className="flex-1">
+                {editingItem ? (
+                  <><Edit className="mr-2 h-4 w-4" /> Update Item</>
+                ) : (
+                  <><PlusCircle className="mr-2 h-4 w-4" /> Add Item</>
+                )}
+              </Button>
+              {editingItem && (
+                <Button onClick={() => setEditingItem(null)} variant="outline">
+                  Cancel
+                </Button>
+              )}
+            </div>
           </div>
           <div className="md:col-span-2">
             <h3 className="font-semibold font-headline mb-4">Current Inventory</h3>
@@ -212,13 +243,31 @@ export default function InventoryDialog({
                       </TableCell>
                       <TableCell>{getExpiryBadge(item.expiryDate)}</TableCell>
                       <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleRemoveItem(item.id)}
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
+                        <div className="flex gap-1 justify-end">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setEditingItem(item);
+                              setNewItem({
+                                name: item.name,
+                                quantity: item.quantity.toString(),
+                                unit: item.unit,
+                                purchaseDate: format(new Date(), "yyyy-MM-dd"),
+                                shelfLife: "",
+                              });
+                            }}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRemoveItem(item.id)}
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}

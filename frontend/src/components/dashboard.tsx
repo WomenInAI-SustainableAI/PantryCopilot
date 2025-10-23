@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/sidebar";
 import SidebarContent from "@/components/layout/sidebar-content";
 import Header from "@/components/layout/header";
-import type { InventoryFormItem, Recipe, UserPreferences, Ingredient } from "@/lib/types";
+import type { InventoryFormItem, Recipe, UserPreferences, UserSettings, Ingredient } from "@/lib/types";
 import { initialUser } from "@/lib/data";
 import { getInventory } from "@/app/actions";
 import { useAuth } from "@/lib/auth";
@@ -25,7 +25,13 @@ export default function Dashboard() {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [userPreferences, setUserPreferences] =
     useState<UserPreferences>(initialUser);
+  const [userSettings, setUserSettings] = useState<UserSettings>({
+    userId: '',
+    name: '',
+    email: ''
+  });
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
+  const [loadingRecommendations, setLoadingRecommendations] = useState(false);
 
   const handleUpdateInventory = (newInventory: InventoryFormItem[]) => {
     setInventory(newInventory);
@@ -51,15 +57,20 @@ export default function Dashboard() {
         setInventory(formInventory);
         
         // Load recommendations from API
+        setLoadingRecommendations(true);
         const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/users/${user.id}/recommendations`);
         if (response.ok) {
           const data = await response.json();
           setRecipes(data.recommendations || []);
+        } else {
+          setRecipes([]);
         }
       } catch (error) {
         console.error('Failed to load data:', error);
         setInventory([]);
         setRecipes([]);
+      } finally {
+        setLoadingRecommendations(false);
       }
     };
     loadData();
@@ -86,6 +97,26 @@ export default function Dashboard() {
   const handleUpdatePreferences = (newPreferences: UserPreferences) => {
     setUserPreferences(newPreferences);
   };
+
+  // Load preferences and settings from API on mount
+  React.useEffect(() => {
+    const loadData = async () => {
+      if (!user) return;
+      
+      try {
+        const { getUserPreferences, getUserSettings } = await import('@/app/actions');
+        const [savedPreferences, savedSettings] = await Promise.all([
+          getUserPreferences(user.id),
+          getUserSettings(user.id)
+        ]);
+        setUserPreferences(savedPreferences);
+        setUserSettings(savedSettings);
+      } catch (error) {
+        console.error('Failed to load user data:', error);
+      }
+    };
+    loadData();
+  }, [user]);
 
   const expiringSoonItems = useMemo(() => {
     return inventory
@@ -160,7 +191,10 @@ export default function Dashboard() {
         />
       </Sidebar>
       <SidebarInset>
-        <Header />
+        <Header 
+          settings={userSettings}
+          onUpdateSettings={(newSettings) => setUserSettings(newSettings)}
+        />
         <main className="p-4 sm:p-6 lg:p-8 space-y-8">
           <div>
             <h1 className="font-headline text-3xl font-bold text-foreground">
@@ -177,7 +211,20 @@ export default function Dashboard() {
                 Recommended For You
               </h2>
               <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
-                {recommendedRecipes.length > 0 ? (
+                {loadingRecommendations ? (
+                  <div className="col-span-full flex flex-col items-center justify-center py-8">
+                    <svg
+                      className="animate-spin h-6 w-6 text-primary mb-2"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                    </svg>
+                    <p className="text-muted-foreground">Loading recommendations...</p>
+                  </div>
+                ) : recommendedRecipes.length > 0 ? (
                   recommendedRecipes.map((recipe) => (
                     <RecipeCard
                       key={recipe.id}
@@ -188,7 +235,7 @@ export default function Dashboard() {
                 ) : (
                   <div className="col-span-full text-center py-8">
                     <p className="text-muted-foreground">
-                      Unable to load recommendations. Please try again later.
+                      No recommendations available. Try adding more items to your inventory.
                     </p>
                   </div>
                 )}

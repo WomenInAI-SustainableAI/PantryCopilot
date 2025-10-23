@@ -1,6 +1,6 @@
 import { ExplainRecipeRecommendationInput, ExplainRecipeRecommendationOutput } from '@/ai/flows/explain-recipe-recommendation'
 import { ImproveRecommendationsFromFeedbackInput, ImproveRecommendationsFromFeedbackOutput } from '@/ai/flows/improve-recommendations-from-feedback'
-import { InventoryItem, AddInventoryRequest } from '@/lib/types'
+import { InventoryItem, AddInventoryRequest, UserPreferences, UserSettings } from '@/lib/types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -49,9 +49,52 @@ export async function getInventory(userId: string): Promise<InventoryItem[]> {
     return response.json()
 }
 
+export async function updateInventoryItem(userId: string, itemId: string, updates: Partial<InventoryItem>): Promise<InventoryItem> {
+    const response = await fetch(`${API_BASE}/api/users/${userId}/inventory/${itemId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+    })
+    if (!response.ok) throw new Error('Failed to update inventory item')
+    return response.json()
+}
+
 export async function deleteInventoryItem(userId: string, itemId: string): Promise<void> {
     const response = await fetch(`${API_BASE}/api/users/${userId}/inventory/${itemId}`, {
         method: 'DELETE'
     })
     if (!response.ok) throw new Error('Failed to delete inventory item')
+}
+
+// User preferences API functions
+export async function getUserPreferences(userId: string): Promise<UserPreferences> {
+    const response = await fetch(`${API_BASE}/api/users/${userId}/preferences`)
+    if (!response.ok) throw new Error('Failed to fetch user preferences')
+    return response.json()
+}
+
+export async function updateUserPreferences(userId: string, preferences: Partial<UserPreferences>): Promise<UserPreferences> {
+    const response = await fetch(`${API_BASE}/api/users/${userId}/preferences`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(preferences)
+    })
+    if (!response.ok) throw new Error('Failed to update user preferences')
+    return response.json()
+}
+
+export async function getUserSettings(userId: string): Promise<UserSettings> {
+    const response = await fetch(`${API_BASE}/api/users/${userId}/settings`)
+    if (!response.ok) throw new Error('Failed to fetch user settings')
+    return response.json()
+}
+
+export async function updateUserSettings(userId: string, settings: Partial<UserSettings>): Promise<UserSettings> {
+    const response = await fetch(`${API_BASE}/api/users/${userId}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+    })
+    if (!response.ok) throw new Error('Failed to update user settings')
+    return response.json()
 }

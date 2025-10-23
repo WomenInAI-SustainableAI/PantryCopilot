@@ -40,6 +40,7 @@ export interface Recipe {
   ingredients: Ingredient[];
   instructions: string[];
   imageId: string;
+  image?: string; // Spoonacular image URL
   matchPercentage?: number;
   expiringIngredientsCount?: number;
   score?: number;
@@ -62,8 +63,17 @@ export interface RegisterRequest {
   password: string;
 }
 
+export interface UserSettings {
+  userId: string;
+  name?: string;
+  email?: string;
+}
+
 export interface UserPreferences {
   userId: string;
   allergies: string[];
   dislikes: string[];
+  dietaryRestrictions?: string[];
+  cookingSkillLevel?: 'beginner' | 'intermediate' | 'advanced';
+  preferredCuisines?: string[];
 }

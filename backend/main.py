@@ -165,6 +165,8 @@ class AddInventoryRequest(BaseModel):
     item_name: str = Field(..., description="Name of the item")
     quantity: float = Field(..., gt=0, description="Quantity")
     unit: Optional[str] = Field("piece", description="Unit of measurement")
+    purchase_date: Optional[str] = Field(None, description="Purchase date (YYYY-MM-DD)")
+    shelf_life_days: Optional[int] = Field(None, description="Manual shelf life in days")
 
 
 def get_shelf_life_days(item_name: str) -> int:
@@ -200,15 +202,30 @@ def get_shelf_life_days(item_name: str) -> int:
 @app.post("/api/users/{user_id}/inventory", response_model=InventoryItem, status_code=201)
 async def add_inventory(user_id: str, item_data: AddInventoryRequest):
     """
-    Add inventory item with AUTO-CALCULATED expiry date.
-    Expiry is calculated based on item type.
+    Add inventory item with calculated expiry date.
+    Uses manual shelf life if provided, otherwise auto-calculates based on item type.
     """
     from datetime import datetime, timedelta
     from src.db.models import InventoryItemCreate
     
-    # Calculate expiry date based on item type
-    shelf_life_days = get_shelf_life_days(item_data.item_name)
-    expiry_date = datetime.utcnow() + timedelta(days=shelf_life_days)
+    # Determine purchase date (convert to UTC)
+    if item_data.purchase_date:
+        # Parse as local date and convert to UTC
+        local_date = datetime.fromisoformat(item_data.purchase_date)
+        purchase_date = local_date.replace(tzinfo=None)  # Treat as UTC
+    else:
+        purchase_date = datetime.utcnow()
+    
+    # Determine shelf life
+    if item_data.shelf_life_days:
+        shelf_life_days = item_data.shelf_life_days
+    else:
+        shelf_life_days = get_shelf_life_days(item_data.item_name)
+    
+    # Calculate expiry date (store as end of day UTC)
+    expiry_date = purchase_date + timedelta(days=shelf_life_days)
+    # Set to end of day (23:59:59) so it expires at end of the day, not exact time
+    expiry_date = expiry_date.replace(hour=23, minute=59, second=59, microsecond=999999)
     
     # Create inventory item
     inventory_create = InventoryItemCreate(
@@ -252,6 +269,90 @@ async def delete_inventory(user_id: str, item_id: str):
     InventoryCRUD.delete(user_id, item_id)
     return None
 
+
+# ========== USER PREFERENCES ENDPOINTS ==========
+
+class UserPreferencesRequest(BaseModel):
+    """Request model for user preferences."""
+    allergies: List[str] = Field(default=[])
+    dislikes: List[str] = Field(default=[])
+    dietary_restrictions: List[str] = Field(default=[])
+    cooking_skill_level: Optional[str] = Field("beginner")
+    preferred_cuisines: List[str] = Field(default=[])
+
+@app.get("/api/users/{user_id}/preferences")
+async def get_user_preferences(user_id: str):
+    """Get user preferences."""
+    from src.db.firestore import db
+    
+    doc = db.collection("users").document(user_id).collection("preferences").document("settings").get()
+    if doc.exists:
+        return doc.to_dict()
+    
+    # Return default preferences
+    return {
+        "userId": user_id,
+        "allergies": [],
+        "dislikes": [],
+        "dietary_restrictions": [],
+        "cooking_skill_level": "beginner",
+        "preferred_cuisines": []
+    }
+
+@app.put("/api/users/{user_id}/preferences")
+async def update_user_preferences(user_id: str, preferences: UserPreferencesRequest):
+    """Update user preferences."""
+    from src.db.firestore import db
+    from datetime import datetime
+    
+    prefs_data = {
+        "userId": user_id,
+        "allergies": preferences.allergies,
+        "dislikes": preferences.dislikes,
+        "dietary_restrictions": preferences.dietary_restrictions,
+        "cooking_skill_level": preferences.cooking_skill_level,
+        "preferred_cuisines": preferences.preferred_cuisines,
+        "updated_at": datetime.utcnow()
+    }
+    
+    db.collection("users").document(user_id).collection("preferences").document("settings").set(prefs_data)
+    return prefs_data
+
+class UserSettingsRequest(BaseModel):
+    """Request model for user settings."""
+    name: Optional[str] = None
+    email: Optional[str] = None
+
+@app.get("/api/users/{user_id}/settings")
+async def get_user_settings(user_id: str):
+    """Get user settings."""
+    from src.db.firestore import db
+    
+    doc = db.collection("users").document(user_id).collection("settings").document("profile").get()
+    if doc.exists:
+        return doc.to_dict()
+    
+    return {
+        "userId": user_id,
+        "name": "",
+        "email": ""
+    }
+
+@app.put("/api/users/{user_id}/settings")
+async def update_user_settings(user_id: str, settings: UserSettingsRequest):
+    """Update user settings."""
+    from src.db.firestore import db
+    from datetime import datetime
+    
+    settings_data = {
+        "userId": user_id,
+        "name": settings.name or "",
+        "email": settings.email or "",
+        "updated_at": datetime.utcnow()
+    }
+    
+    db.collection("users").document(user_id).collection("settings").document("profile").set(settings_data)
+    return settings_data
 
 # ========== RECIPE RECOMMENDATION ENDPOINTS ==========
 

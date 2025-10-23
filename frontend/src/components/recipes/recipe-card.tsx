@@ -14,7 +14,10 @@ interface RecipeCardProps {
 }
 
 export default function RecipeCard({ recipe, onSelectRecipe }: RecipeCardProps) {
-  const image = PlaceHolderImages.find((img) => img.id === recipe.imageId);
+  // Use Spoonacular image if available, fallback to placeholder
+  const spoonacularImage = recipe.image || `https://spoonacular.com/recipeImages/${recipe.id}-312x231.jpg`;
+  const placeholderImage = PlaceHolderImages.find((img) => img.id === recipe.imageId);
+  const imageUrl = spoonacularImage || placeholderImage?.imageUrl;
 
   return (
     <Card
@@ -22,13 +25,12 @@ export default function RecipeCard({ recipe, onSelectRecipe }: RecipeCardProps) 
       onClick={() => onSelectRecipe(recipe)}
     >
       <CardHeader className="p-0 relative">
-        {image && (
+        {imageUrl && (
           <Image
             alt={recipe.title}
             className="aspect-video w-full object-cover"
-            data-ai-hint={image.imageHint}
             height={337}
-            src={image.imageUrl}
+            src={imageUrl}
             width={600}
           />
         )}
