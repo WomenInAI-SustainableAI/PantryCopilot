@@ -1,6 +1,7 @@
 """
 Recipe Recommendation Service
 Main service that orchestrates recipe recommendations with all features
+Includes CMAB (Contextual Multi-Armed Bandit) for personalized learning
 """
 from typing import List, Dict, Optional
 from src.db.crud import (
@@ -9,6 +10,7 @@ from src.db.crud import (
     get_user_feedback,
     create_recommendation
 )
+from src.db.crud.cmab import CMABCRUD
 from src.db.models import RecipeRecommendationCreate
 from src.services.spoonacular_service import (
     search_recipes_by_ingredients,
@@ -17,6 +19,11 @@ from src.services.spoonacular_service import (
 )
 from src.services.recipe_scoring_service import rank_recipes
 from src.services.inventory_service import get_expiring_soon
+from src.services.cmab_service import (
+    RecipeCategory,
+    ContextFeatures,
+    convert_feedback_to_reward
+)
 # from src.ai.flows.explain_recipe_recommendation import explain_recipe_recommendation
 
 
@@ -25,15 +32,17 @@ async def get_personalized_recommendations(
     number_of_recipes: int = 10
 ) -> List[Dict]:
     """
-    Get personalized recipe recommendations for a user.
+    Get personalized recipe recommendations for a user using CMAB.
     
     This is the main recommendation function that:
     1. Gets user inventory and identifies expiring items
-    2. Gets user allergies for filtering
-    3. Searches recipes via Spoonacular
-    4. Scores and ranks recipes
-    5. Generates AI explanations
-    6. Saves recommendations to database
+    2. Extracts context features from inventory
+    3. Uses CMAB to select recipe categories to explore
+    4. Gets user allergies for filtering
+    5. Searches recipes via Spoonacular in selected categories
+    6. Scores and ranks recipes
+    7. Generates AI explanations
+    8. Saves recommendations to database
     
     Args:
         user_id: User ID
@@ -50,40 +59,80 @@ async def get_personalized_recommendations(
     if not inventory:
         return []
     
-    # 2. Extract ingredient names
+    # 2. Load or create CMAB model
+    cmab_model = CMABCRUD.get_or_create(user_id)
+    
+    # 3. Extract context features from inventory
+    context = ContextFeatures.extract_inventory_context(inventory)
+    
+    # 4. Select top categories using CMAB (Thompson Sampling)
+    selected_categories = cmab_model.select_categories(
+        context=context,
+        n_categories=3  # Select top 3 categories
+    )
+    
+    print(f"CMAB selected categories for user {user_id}: {selected_categories}")
+    print(f"Context: {context}")
+    print(f"Cold start mode: {cmab_model.is_cold_start}")
+    
+    # 5. Extract ingredient names
     ingredient_names = [item.item_name for item in inventory]
     expiring_names = [item.item_name for item in expiring_items]
     allergen_names = [allergy.allergen for allergy in allergies]
     
-    # 3. Search recipes using Spoonacular
-    # First try with expiring ingredients to prioritize urgency
+    # 6. Search recipes using Spoonacular with CMAB-selected categories
     recipes = []
     
-    if expiring_names:
-        expiring_recipes = await search_recipes_by_ingredients(
-            ingredients=expiring_names,
-            number=number_of_recipes,
-            ranking=2  # Minimize missing ingredients
-        )
-        recipes.extend(expiring_recipes)
+    # Search in each selected category
+    for category, score in selected_categories:
+        try:
+            # Use category as cuisine or tag filter
+            category_recipes = await search_recipes_complex(
+                query=category if category != "general" else "",
+                cuisine=category if category in ["italian", "asian", "mexican", "american", "mediterranean", "indian"] else None,
+                type=category if category in ["breakfast", "dessert", "soup", "salad"] else None,
+                exclude_ingredients=allergen_names,
+                intolerances=allergen_names,
+                number=number_of_recipes
+            )
+            
+            if "results" in category_recipes:
+                recipes.extend(category_recipes["results"])
+        except Exception as e:
+            print(f"Error searching recipes for category {category}: {e}")
     
-    # Get more recipes with all ingredients if needed
+    # Also search with expiring ingredients to prioritize urgency
+    if expiring_names:
+        try:
+            expiring_recipes = await search_recipes_by_ingredients(
+                ingredients=expiring_names,
+                number=number_of_recipes,
+                ranking=2  # Minimize missing ingredients
+            )
+            recipes.extend(expiring_recipes)
+        except Exception as e:
+            print(f"Error searching recipes with expiring ingredients: {e}")
+    
+    # Fallback: Get recipes with all ingredients if needed
     if len(recipes) < number_of_recipes:
-        all_recipes = await search_recipes_by_ingredients(
-            ingredients=ingredient_names,
-            number=number_of_recipes * 2,
-            ranking=2
-        )
+        try:
+            all_recipes = await search_recipes_by_ingredients(
+                ingredients=ingredient_names,
+                number=number_of_recipes * 2,
+                ranking=2
+            )
+            
+            # Add recipes that aren't already in the list
+            existing_ids = {r.get("id") for r in recipes}
+            for recipe in all_recipes:
+                if recipe.get("id") not in existing_ids:
+                    recipes.append(recipe)
+        except Exception as e:
+            print(f"Error in fallback recipe search: {e}")
         
-        # Add recipes that aren't already in the list
-        existing_ids = {r.get("id") for r in recipes}
-        for recipe in all_recipes:
-            if recipe.get("id") not in existing_ids:
-                recipes.append(recipe)
-        
-    # 4. Get detailed information for each recipe
+    # 7. Get detailed information for each recipe
     detailed_recipes = []
-    for recipe in recipes[:number_of_recipes * 2]:  # Get more than needed for filtering
+    for recipe in recipes[:number_of_recipes * 3]:  # Get more than needed for filtering
         try:
             recipe_info = await get_recipe_information(recipe["id"])
             
@@ -93,12 +142,21 @@ async def get_personalized_recommendations(
                 ingredients = [ing.get("name", "") for ing in recipe_info["extendedIngredients"]]
             
             recipe_info["ingredients"] = ingredients
+            
+            # Classify recipe into categories for CMAB tracking
+            recipe_tags = recipe_info.get("dishTypes", []) + recipe_info.get("cuisines", [])
+            recipe_categories = RecipeCategory.classify_recipe(
+                recipe_info.get("title", ""),
+                recipe_tags
+            )
+            recipe_info["categories"] = recipe_categories
+            
             detailed_recipes.append(recipe_info)
         except Exception as e:
             print(f"Error fetching recipe {recipe['id']}: {e}")
             continue
     
-    # 5. Calculate feedback scores from historical data
+    # 8. Calculate feedback scores from historical data
     feedback_history = get_user_feedback(user_id)
     feedback_scores = {}
     
@@ -115,7 +173,7 @@ async def get_personalized_recommendations(
         elif feedback.feedback_type.value == "skip":
             feedback_scores[recipe_id] -= 1.0
     
-    # 6. Score and rank recipes
+    # 9. Score and rank recipes
     ranked_recipes = rank_recipes(
         recipes=detailed_recipes,
         user_inventory=inventory,
@@ -123,7 +181,7 @@ async def get_personalized_recommendations(
         feedback_scores=feedback_scores
     )
     
-    # 7. Generate AI explanations for top recipes
+    # 10. Generate AI explanations for top recipes and save
     final_recommendations = []
     
     for recipe in ranked_recipes[:number_of_recipes]:
@@ -147,7 +205,12 @@ async def get_personalized_recommendations(
         #     print(f"Error generating explanation for {recipe['title']}: {e}")
         #     recipe["ai_explanation"] = "This recipe is recommended based on your inventory."
         
-        # 8. Save recommendation to database
+        # Add CMAB explanation
+        recipe_categories = recipe.get("categories", ["general"])
+        cmab_explanation = f"Recommended based on your preference for {', '.join(recipe_categories[:2])} recipes."
+        recipe["ai_explanation"] = cmab_explanation
+        
+        # 11. Save recommendation to database
         try:
             rec_data = RecipeRecommendationCreate(
                 recipe_id=str(recipe["id"]),
@@ -162,7 +225,52 @@ async def get_personalized_recommendations(
         
         final_recommendations.append(recipe)
     
+    # 12. Save updated CMAB model
+    CMABCRUD.save(user_id, cmab_model)
+    
     return final_recommendations
+
+
+async def update_cmab_with_feedback(
+    user_id: str,
+    recipe_id: str,
+    recipe_categories: List[str],
+    feedback_type: str,
+    is_cooked: bool = False
+):
+    """
+    Update CMAB model when user provides feedback.
+    
+    This function should be called whenever a user:
+    - Upvotes/downvotes a recipe
+    - Cooks a recipe
+    - Skips a recipe
+    
+    Args:
+        user_id: User ID
+        recipe_id: Recipe ID
+        recipe_categories: Categories of the recipe
+        feedback_type: Type of feedback ("upvote", "downvote", "skip")
+        is_cooked: Whether the recipe was cooked
+    """
+    # Load CMAB model
+    cmab_model = CMABCRUD.get_or_create(user_id)
+    
+    # Get current inventory context
+    inventory = get_user_inventory(user_id)
+    context = ContextFeatures.extract_inventory_context(inventory)
+    
+    # Convert feedback to reward
+    reward = convert_feedback_to_reward(feedback_type, is_cooked)
+    
+    # Update model for each category
+    for category in recipe_categories:
+        if category in cmab_model.categories:
+            cmab_model.update(category, reward, context)
+            print(f"Updated CMAB: category={category}, reward={reward}, context={context}")
+    
+    # Save updated model
+    CMABCRUD.save(user_id, cmab_model)
 
 
 async def get_recommendations_by_preferences(
