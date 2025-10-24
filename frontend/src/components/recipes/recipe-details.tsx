@@ -16,10 +16,76 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ThumbsUp, ThumbsDown, Sparkles, ChefHat } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import type { Recipe, UserPreferences, InventoryFormItem } from "@/lib/types";
+import type { Recipe, NormalizedRecipe, UserPreferences, InventoryFormItem, Ingredient } from "@/lib/types";
 import { PlaceHolderImages } from "@/lib/placeholder-images";
 import { getRecipeExplanation, submitFeedback } from "@/app/actions";
 import { Skeleton } from "../ui/skeleton";
+// Lightweight client-side sanitizer for a limited set of tags/attrs.
+// We avoid adding a runtime dependency here; this sanitizer keeps basic formatting and links.
+function sanitizeHtml(dirty: string): string {
+  if (!dirty) return "";
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(dirty, "text/html");
+  const allowedTags = new Set(["b", "strong", "i", "em", "a", "ul", "ol", "li", "p", "br"]);
+  const allowedAttrs = new Set(["href", "title"]);
+
+  function sanitizeElement(el: Element): Element | null {
+    const tag = el.tagName.toLowerCase();
+    if (!allowedTags.has(tag)) {
+      // If tag not allowed, we will return a fragment of its children
+      const frag = document.createDocumentFragment();
+      el.childNodes.forEach((child) => {
+        const sanitized = sanitizeNode(child);
+        if (sanitized) frag.appendChild(sanitized);
+      });
+      const wrapper = document.createElement('div');
+      wrapper.appendChild(frag);
+      return wrapper;
+    }
+
+    const newEl = document.createElement(tag);
+    // copy allowed attributes
+    Array.from(el.attributes || []).forEach((attr) => {
+      const name = attr.name.toLowerCase();
+      if (allowedAttrs.has(name)) {
+        if (name === 'href') {
+          // Only allow http/https/mailto/hash URLs
+          const v = attr.value || '';
+          if (/^(https?:\/\/|mailto:|#)/i.test(v)) {
+            newEl.setAttribute('href', v);
+            newEl.setAttribute('target', '_blank');
+            newEl.setAttribute('rel', 'noopener noreferrer');
+          }
+        } else {
+          newEl.setAttribute(name, attr.value);
+        }
+      }
+    });
+
+    el.childNodes.forEach((child) => {
+      const sanitized = sanitizeNode(child);
+      if (sanitized) newEl.appendChild(sanitized);
+    });
+    return newEl;
+  }
+
+  function sanitizeNode(node: ChildNode): Node | null {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return document.createTextNode(node.textContent || '');
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      return sanitizeElement(node as Element);
+    }
+    return null;
+  }
+
+  const container = document.createElement('div');
+  doc.body.childNodes.forEach((child) => {
+    const sanitized = sanitizeNode(child);
+    if (sanitized) container.appendChild(sanitized);
+  });
+  return container.innerHTML;
+}
 import { differenceInDays } from "date-fns";
 
 interface RecipeDetailsProps {
@@ -28,7 +94,7 @@ interface RecipeDetailsProps {
   inventory: InventoryFormItem[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCookRecipe: (recipe: Recipe) => void;
+  onCookRecipe: (recipe: NormalizedRecipe) => void;
 }
 
 // Helpers to normalize incoming recipe shapes from the backend/spoonacular
@@ -40,8 +106,10 @@ function stripHtmlToSteps(html?: string): string[] {
   return text.split("||").map((s) => s.trim()).filter(Boolean);
 }
 
-function normalizeRecipe(raw: any) {
-  if (!raw) return { instructions: [], ingredients: [], matchPercentage: 0, title: "", description: "" };
+// (kept HTML in description; we'll sanitize when rendering using DOMPurify)
+
+function normalizeRecipe(raw: any): NormalizedRecipe {
+  if (!raw) return { id: '', title: '', description: '', ingredients: [], instructions: [], imageId: '', matchPercentage: 0 } as NormalizedRecipe;
 
   // Instructions: prefer analyzedInstructions -> steps, otherwise parse `instructions` HTML or coerce string -> array
   let instructions: string[] = [];
@@ -71,14 +139,19 @@ function normalizeRecipe(raw: any) {
 
   const matchPercentage = raw?.scoring?.match_percentage ?? raw?.matchPercentage ?? raw?.scoring?.matchPercentage ?? 0;
 
-  return {
-    ...raw,
+  // Build a Recipe-shaped object
+  const recipeObj: NormalizedRecipe = {
+    id: raw?.id ? String(raw.id) : (raw?.recipeId ? String(raw.recipeId) : ''),
+  title: raw?.title || '',
+  description: raw?.summary || raw?.description || '',
+    ingredients: ingredients as any,
     instructions,
-    ingredients,
-    matchPercentage,
-    title: raw?.title || "",
-    description: raw?.summary || raw?.description || "",
+    imageId: raw?.imageId || '',
+    image: raw?.image || raw?.imageUrl,
+    matchPercentage: matchPercentage,
   };
+
+  return recipeObj;
 }
 
 export default function RecipeDetails({
@@ -96,25 +169,30 @@ export default function RecipeDetails({
 
   const normalized = useMemo(() => normalizeRecipe(recipe), [recipe]);
 
-  const image = PlaceHolderImages.find((img) => img.id === (recipe as any).imageId);
+  const sanitizedDescription = useMemo(() => sanitizeHtml(normalized.description || ''), [normalized.description]);
+
+  // Derive image URL similar to RecipeCard: prefer normalized.image (spoonacular URL),
+  // otherwise try a constructed spoonacular URL by id, then fallback to placeholder set.
+  const placeholderImage = PlaceHolderImages.find((img) => img.id === normalized.imageId);
+  const spoonacularImage = normalized.image || (normalized.id ? `https://spoonacular.com/recipeImages/${normalized.id}-636x393.jpg` : undefined);
+  const imageUrl = spoonacularImage || placeholderImage?.imageUrl;
 
   const expiringIngredients = useMemo(() => {
-  const recipeIngredients = new Set((normalized.ingredients || []).map((i: any) => (i?.name || '').toLowerCase()));
+    const recipeIngredients = new Set(normalized.ingredients.map((i: Ingredient) => i.name.toLowerCase()));
     return (inventory || []).filter(item => {
-        if (!item) return false;
-        const expiry = item.expiryDate ? new Date(item.expiryDate) : null;
-        if (!expiry || isNaN(expiry.getTime())) return false;
-        const daysUntilExpiry = differenceInDays(expiry, new Date());
-        return daysUntilExpiry <= 7 && recipeIngredients.has((item.name || '').toLowerCase());
+      const expiry = item?.expiryDate ? new Date(item.expiryDate) : null;
+      if (!expiry || isNaN(expiry.getTime())) return false;
+      const daysUntilExpiry = differenceInDays(expiry, new Date());
+      return daysUntilExpiry <= 7 && recipeIngredients.has((item?.name || '').toLowerCase());
     }).map(item => item.name);
   }, [inventory, normalized.ingredients]);
 
   const missingIngredients = useMemo(() => {
-    const inventoryMap = new Map(
-      (inventory || []).map(item => [((item?.name || '')).toLowerCase(), item?.quantity])
+    const inventoryMap = new Map<string, number>(
+      (inventory || []).map(item => [((item?.name || '')).toLowerCase(), item?.quantity ?? 0])
     );
-    return (normalized.ingredients || []).filter(
-      (ing: any) => (inventoryMap.get((ing?.name || '').toLowerCase()) || 0) < (ing?.quantity || 0)
+    return normalized.ingredients.filter(
+      (ing: Ingredient) => (inventoryMap.get(ing.name.toLowerCase()) || 0) < (ing.quantity || 0)
     );
   }, [inventory, normalized.ingredients]);
 
@@ -124,11 +202,11 @@ export default function RecipeDetails({
       setFeedbackSubmitted(null);
       const fetchExplanation = async () => {
         const result = await getRecipeExplanation({
-          recipeName: normalized.title || (recipe as any).title,
-          expiringIngredients: expiringIngredients,
+          recipeName: normalized.title,
+          expiringIngredients,
           allergies: userPreferences.allergies,
-          inventoryMatchPercentage: normalized.matchPercentage || (recipe as any).matchPercentage || 0,
-          missingIngredients: missingIngredients.map((i: any) => i.name),
+          inventoryMatchPercentage: normalized.matchPercentage ?? 0,
+          missingIngredients: missingIngredients.map((i: Ingredient) => i.name),
         });
         setExplanation(result.explanation);
         setIsLoadingExplanation(false);
@@ -143,7 +221,7 @@ export default function RecipeDetails({
     setFeedbackSubmitted(feedbackType);
 
     const result = await submitFeedback({
-      recipeId: (recipe as any).id,
+      recipeId: normalized.id,
       // submitFeedback expects a FeedbackType; cast here to satisfy the API surface
       feedbackType: feedbackType as any,
       userId: userPreferences.userId,
@@ -157,10 +235,12 @@ export default function RecipeDetails({
   };
 
   const handleCookClick = () => {
-    onCookRecipe(recipe);
+  // Pass a normalized recipe shape to the parent so inventory updates work
+  // (parent expects recipe.ingredients to be objects with .name and .quantity)
+  onCookRecipe(normalized);
     toast({
       title: "Bon Appétit!",
-      description: `Your inventory has been updated after cooking ${normalized.title || (recipe as any).title}.`,
+      description: `Your inventory has been updated after cooking ${normalized.title}.`,
     });
   }
 
@@ -170,20 +250,26 @@ export default function RecipeDetails({
         <ScrollArea className="h-full">
           <div className="pb-32">
             <SheetHeader className="relative">
-              {image && (
+              {imageUrl ? (
                 <Image
-                  alt={normalized.title || (recipe as any).title}
+                  alt={normalized.title}
                   className="aspect-video w-full object-cover"
                   height={337}
-                  src={image.imageUrl}
+                  src={imageUrl}
                   width={600}
-
-                  data-ai-hint={image.imageHint}
                 />
+              ) : (
+                // simple visual placeholder when no image URL available
+                <div className="aspect-video w-full bg-muted/50 flex items-center justify-center text-muted-foreground">No image</div>
               )}
               <div className="p-6 text-left space-y-2">
-                <SheetTitle className="font-headline text-3xl">{recipe.title}</SheetTitle>
-                <SheetDescription>{recipe.description}</SheetDescription>
+                <SheetTitle className="font-headline text-3xl">{normalized.title}</SheetTitle>
+                <SheetDescription>
+                  <div
+                    className="text-sm leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: sanitizedDescription }}
+                  />
+                </SheetDescription>
               </div>
             </SheetHeader>
             <div className="p-6 space-y-6">
@@ -205,7 +291,7 @@ export default function RecipeDetails({
               <div>
                 <h3 className="font-headline text-lg font-semibold mb-3">Ingredients</h3>
                 <ul className="space-y-2 text-sm">
-                  {(normalized.ingredients || []).map((ing: any, index: number) => (
+                  {normalized.ingredients.map((ing: Ingredient, index: number) => (
                     <li key={index} className="flex justify-between">
                       <span>{ing.name}</span>
                       <span className="text-muted-foreground">{ing.quantity} {ing.unit}</span>
@@ -217,7 +303,7 @@ export default function RecipeDetails({
               <div>
                 <h3 className="font-headline text-lg font-semibold mb-3">Instructions</h3>
                 <ol className="space-y-4 text-sm list-decimal list-inside">
-                  {(normalized.instructions || []).map((step: any, index: number) => (
+                  {normalized.instructions.map((step: string, index: number) => (
                     <li key={index}>{step}</li>
                   ))}
                 </ol>

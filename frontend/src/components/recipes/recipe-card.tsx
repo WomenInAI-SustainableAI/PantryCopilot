@@ -5,6 +5,45 @@ import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/componen
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Recipe } from "@/lib/types";
+// Lightweight sanitizer for recipe card descriptions (same rules as details view)
+function sanitizeHtmlForCard(dirty: string): string {
+  if (!dirty) return '';
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(dirty, 'text/html');
+    const allowed = new Set(['b','strong','i','em','a','p']);
+    const container = document.createElement('div');
+    function walk(node: ChildNode, target: Node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        target.appendChild(document.createTextNode(node.textContent || ''));
+        return;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element;
+        const tag = el.tagName.toLowerCase();
+        if (!allowed.has(tag)) {
+          el.childNodes.forEach(c => walk(c, target));
+          return;
+        }
+        const newEl = document.createElement(tag);
+        if (tag === 'a') {
+          const href = el.getAttribute('href') || '';
+          if (/^(https?:\/\/|mailto:|#)/i.test(href)) {
+            newEl.setAttribute('href', href);
+            newEl.setAttribute('target', '_blank');
+            newEl.setAttribute('rel', 'noopener noreferrer');
+          }
+        }
+        el.childNodes.forEach(c => walk(c, newEl));
+        target.appendChild(newEl);
+      }
+    }
+    doc.body.childNodes.forEach(n => walk(n, container));
+    return container.innerHTML;
+  } catch (e) {
+    return '';
+  }
+}
 import { PlaceHolderImages } from "@/lib/placeholder-images";
 import { Flame, Percent } from "lucide-react";
 
@@ -51,9 +90,7 @@ export default function RecipeCard({ recipe, onSelectRecipe }: RecipeCardProps) 
         <h3 className="font-headline text-lg font-semibold leading-tight">
           {recipe.title}
         </h3>
-        <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-          {recipe.description}
-        </p>
+  <p className="text-sm text-muted-foreground mt-1 line-clamp-2" dangerouslySetInnerHTML={{ __html: sanitizeHtmlForCard(recipe.description || '') }} />
       </CardContent>
       <CardFooter className="p-4 pt-0">
         <Button className="w-full" variant="default">View Recipe</Button>

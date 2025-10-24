@@ -46,6 +46,20 @@ export interface Recipe {
   score?: number;
 }
 
+// Normalized recipe shape used by the frontend after converting Spoonacular payloads
+export interface NormalizedIngredient {
+  name: string;
+  quantity: number;
+  unit: string;
+  original?: unknown;
+}
+
+export type NormalizedRecipe = Omit<Recipe, "ingredients" | "instructions"> & {
+  ingredients: NormalizedIngredient[];
+  instructions: string[];
+  matchPercentage: number;
+};
+
 export interface User {
   id: string;
   email: string;

@@ -75,3 +75,4 @@
 /backend/src/ai/__pycache__/
 /backend/src/ai/__pycache__/
 /backend/src/ai/flows/__pycache__/
+node_modules

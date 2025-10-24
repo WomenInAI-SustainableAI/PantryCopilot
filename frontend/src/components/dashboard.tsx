@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/sidebar";
 import SidebarContent from "@/components/layout/sidebar-content";
 import Header from "@/components/layout/header";
-import type { InventoryFormItem, Recipe, UserPreferences, UserSettings, Ingredient } from "@/lib/types";
+import type { InventoryFormItem, Recipe, NormalizedRecipe, UserPreferences, UserSettings, Ingredient } from "@/lib/types";
 import { initialUser } from "@/lib/data";
 import { getInventory } from "@/app/actions";
 import { useAuth } from "@/lib/auth";
@@ -76,7 +76,7 @@ export default function Dashboard() {
     loadData();
   }, [user]);
 
-  const handleCookRecipe = (recipe: Recipe) => {
+  const handleCookRecipe = (recipe: NormalizedRecipe) => {
     const updatedInventory = inventory.map(invItem => {
       const recipeIngredient = recipe.ingredients.find(
         ing => ing.name.toLowerCase() === invItem.name.toLowerCase()
