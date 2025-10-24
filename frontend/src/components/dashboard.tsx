@@ -56,9 +56,9 @@ export default function Dashboard() {
         }));
         setInventory(formInventory);
         
-        // Load recommendations from API
-        setLoadingRecommendations(true);
-        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/users/${user.id}/recommendations`);
+    // Load recommendations from API (limit to 3)
+    setLoadingRecommendations(true);
+    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/users/${user.id}/recommendations?limit=3`);
         if (response.ok) {
           const data = await response.json();
           setRecipes(data.recommendations || []);
@@ -225,6 +225,7 @@ export default function Dashboard() {
                     <p className="text-muted-foreground">Loading recommendations...</p>
                   </div>
                 ) : recommendedRecipes.length > 0 ? (
+                  // Only display up to 3 recommendations in the UI as an extra safety
                   recommendedRecipes.map((recipe) => (
                     <RecipeCard
                       key={recipe.id}
