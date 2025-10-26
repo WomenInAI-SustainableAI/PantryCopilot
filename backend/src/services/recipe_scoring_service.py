@@ -3,7 +3,7 @@ Recipe Scoring Service
 Scores recipes based on inventory match, expiring ingredients, and user preferences
 """
 from typing import List, Dict, Tuple
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from src.db.models import InventoryItem, Allergy
 
 
@@ -60,7 +60,8 @@ def calculate_expiry_urgency_score(
     Returns:
         Tuple of (urgency_score, expiring_ingredients_list)
     """
-    today = datetime.now()
+    # Always use UTC on the server
+    today = datetime.now(timezone.utc)
     expiring_ingredients = []
     urgency_score = 0.0
     
@@ -72,17 +73,17 @@ def calculate_expiry_urgency_score(
             if ingredient_lower in item.item_name.lower() or \
                item.item_name.lower() in ingredient_lower:
                 
-                # Convert expiry_date to datetime if it's a date object
+                # Normalize to UTC-aware datetime
                 expiry_dt = item.expiry_date
                 if isinstance(expiry_dt, date) and not isinstance(expiry_dt, datetime):
-                    expiry_dt = datetime.combine(expiry_dt, datetime.min.time())
-                
-                # Remove timezone info if present to make comparison work
-                if hasattr(expiry_dt, 'tzinfo') and expiry_dt.tzinfo is not None:
-                    expiry_dt = expiry_dt.replace(tzinfo=None)
-                
-                # Calculate days until expiry
-                days_until_expiry = (expiry_dt - today).days
+                    expiry_dt = datetime.combine(expiry_dt, datetime.min.time(), tzinfo=timezone.utc)
+                if isinstance(expiry_dt, datetime):
+                    if getattr(expiry_dt, 'tzinfo', None) is None:
+                        expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+                    else:
+                        expiry_dt = expiry_dt.astimezone(timezone.utc)
+                    # Calculate days until expiry
+                    days_until_expiry = (expiry_dt - today).days
                 
                 if days_until_expiry <= 3:
                     expiring_ingredients.append(item.item_name)

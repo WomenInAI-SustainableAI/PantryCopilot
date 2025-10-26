@@ -2,7 +2,7 @@
 CRUD operations for Inventory subcollection
 """
 from typing import List, Optional
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 import uuid
 from google.cloud.firestore_v1 import FieldFilter
 
@@ -29,7 +29,7 @@ class InventoryCRUD:
             Created inventory item
         """
         item_id = str(uuid.uuid4())
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         item_dict = {
             "id": item_id,
@@ -96,7 +96,7 @@ class InventoryCRUD:
         return [InventoryItem(**doc.to_dict()) for doc in docs]
     
     @staticmethod
-    def get_expiring_items(user_id: str, expiry_date: date) -> List[InventoryItem]:
+    def get_expiring_items(user_id: str, expiry_date: datetime) -> List[InventoryItem]:
         """
         Get inventory items expiring on or before a specific date.
         
@@ -147,7 +147,7 @@ class InventoryCRUD:
             k: v for k, v in update_data.model_dump().items() 
             if v is not None
         }
-        update_dict["updated_at"] = datetime.utcnow()
+        update_dict["updated_at"] = datetime.now(timezone.utc)
         
         doc_ref.update(update_dict)
         
@@ -225,8 +225,8 @@ async def get_user_inventory(user_id: str, limit: int = 100) -> List[InventoryIt
 
 async def get_expiring_items(user_id: str, days: int = 3) -> List[InventoryItem]:
     """Get items expiring within specified days."""
-    from datetime import timedelta
-    expiry_date = datetime.today() + timedelta(days=days)
+    from datetime import timedelta, timezone
+    expiry_date = datetime.now(timezone.utc) + timedelta(days=days)
     return InventoryCRUD.get_expiring_items(user_id, expiry_date)
 
 

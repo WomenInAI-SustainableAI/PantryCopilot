@@ -2,7 +2,7 @@
 Inventory Service - Business logic for inventory management
 Auto-calculates expiry dates based on quantity
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List
 from src.db.crud import (
     create_inventory_item,
@@ -104,7 +104,8 @@ def calculate_expiry_date(item_name: str, quantity: float) -> datetime:
         base_days = int(base_days * 0.8)
     
     # Calculate expiry date as datetime (not date) for Firestore compatibility
-    expiry = datetime.now() + timedelta(days=base_days)
+    # Use UTC for server-side timestamps
+    expiry = datetime.now(timezone.utc) + timedelta(days=base_days)
     
     return expiry
 
@@ -196,5 +197,6 @@ def get_expiring_soon(user_id: str, days: int = 3) -> List[InventoryItem]:
     Returns:
         List of expiring inventory items
     """
-    expiry_date = datetime.now() + timedelta(days=days)
+    # Always compute in UTC
+    expiry_date = datetime.now(timezone.utc) + timedelta(days=days)
     return get_expiring_items(user_id, expiry_date)
