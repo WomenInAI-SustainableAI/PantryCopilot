@@ -34,7 +34,9 @@ Complete API documentation for all features of PantryCopilot.
 ✅ **Preference Filtering** → Allergies + Dislikes
 ✅ **Mini Explanation Engine** → Urgency + Safety + Money Saving + Partial Usage
 ✅ **Auto Inventory Update** → "Cooked" button subtracts quantities
-✅ **Feedback-based Reinforcement Learning** → Improves recommendations over time
+✅ **CMAB Personalization** → Contextual Multi-Armed Bandit learns user preferences
+✅ **Cold Start Solution** → Epsilon-greedy exploration for new users
+✅ **API Optimization** → Reduced API calls by 50% in cooked endpoint
 
 ---
 
@@ -200,10 +202,10 @@ Get filtered recommendations with additional preferences
 
 ---
 
-### 🎯 "COOKED" Button - Auto Inventory Update
+### 🎯 "COOKED" Button - Auto Inventory Update + CMAB Learning
 
 #### `POST /api/users/{user_id}/recipes/cooked`
-**Mark recipe as cooked - AUTOMATICALLY SUBTRACTS INGREDIENTS**
+**Mark recipe as cooked - AUTOMATICALLY SUBTRACTS INGREDIENTS + UPDATES CMAB**
 
 ```json
 Request:
@@ -216,34 +218,43 @@ Response:
 {
   "recipe_id": "12345",
   "servings_made": 2,
+  "recipe_servings": 4,
   "inventory_updates": {
     "tomatoes": "updated (new quantity: 1.5)",
     "basil": "deleted (quantity depleted)",
     "pasta": "not found in inventory",
     "cream": "updated (new quantity: 0.5)"
   },
-  "message": "Inventory updated successfully"
+  "cmab_updated": true,
+  "message": "Inventory updated and preferences learned successfully"
 }
 ```
 
 **How it works:**
-1. Fetches exact ingredient quantities from Spoonacular
-2. Scales quantities based on servings made
-3. Automatically subtracts from your inventory
-4. Deletes items if quantity reaches 0
-5. Returns detailed status for each ingredient
+1. Fetches recipe information from Spoonacular (single optimized API call)
+2. Extracts ingredient quantities and recipe categories
+3. Scales quantities based on servings made vs recipe's default servings
+4. Automatically subtracts from your inventory
+5. Deletes items if quantity reaches 0
+6. **Updates CMAB with +2 reward** (strongest positive signal)
+7. Returns detailed status for each ingredient
+
+**Why this matters:**
+Cooking a recipe is the strongest signal that you liked it! The system learns from this and will recommend similar recipe categories more often.
 
 ---
 
-### 👍 Feedback & Reinforcement Learning
+### 👍 Feedback & CMAB Learning (Contextual Multi-Armed Bandit)
 
 #### `POST /api/users/{user_id}/feedback`
-**Submit feedback to improve recommendations**
+**Submit feedback to improve recommendations using CMAB**
 
 ```json
 Request:
 {
   "recipe_id": "12345",
+  "recipe_title": "Creamy Tomato Basil Pasta",
+  "recipe_categories": ["italian", "quick_meals"],
   "feedback_type": "upvote"  // "upvote" | "downvote" | "skip"
 }
 
@@ -257,15 +268,66 @@ Response:
 }
 ```
 
-**Feedback Impact:**
-- **Upvote** (+2 points): Recipe will rank higher in future recommendations
-- **Downvote** (-3 points): Recipe will rank lower in future recommendations
-- **Skip** (-1 point): Slight negative signal
+**CMAB Reward Scheme:**
+- **👍 Upvote**: +1 reward
+- **👎 Downvote**: -1 reward
+- **⏭️ Skip**: 0 reward
+- **🍳 Cooked**: +2 reward (handled in `/cooked` endpoint)
 
-The system uses this feedback in real-time to adjust future recommendation scores!
+**How CMAB Works:**
+The system learns which recipe categories (Italian, Asian, Quick Meals, etc.) you prefer based on:
+- Your current inventory context (expiring items, available ingredients)
+- Your feedback over time
+- Thompson Sampling algorithm with Beta distributions
+
+The more you interact, the better the recommendations become!
 
 #### `GET /api/users/{user_id}/feedback`
 Get feedback history
+
+#### `GET /api/users/{user_id}/cmab/statistics`
+**Get CMAB learning statistics**
+
+See how the system has learned your preferences:
+
+```json
+Response:
+{
+  "user_id": "user_abc123",
+  "categories": {
+    "italian": {
+      "pulls": 15,
+      "total_reward": 12.0,
+      "mean_reward": 0.8,
+      "expected_value": 0.82,
+      "alpha": 13.0,
+      "beta": 3.0
+    },
+    "asian": {
+      "pulls": 10,
+      "total_reward": 5.0,
+      "mean_reward": 0.5,
+      "expected_value": 0.55,
+      "alpha": 6.0,
+      "beta": 5.0
+    },
+    "quick_meals": {
+      "pulls": 8,
+      "total_reward": 8.0,
+      "mean_reward": 1.0,
+      "expected_value": 0.9,
+      "alpha": 9.0,
+      "beta": 1.0
+    }
+  }
+}
+```
+
+**Understanding the Stats:**
+- `pulls`: How many times this category was recommended
+- `mean_reward`: Average feedback score for this category
+- `expected_value`: Predicted preference (0-1, higher = more preferred)
+- `alpha/beta`: Beta distribution parameters (higher alpha = more liked)
 
 ---
 
@@ -301,33 +363,62 @@ Process feedback through AI for learning (usually called automatically)
 
 ---
 
-## 🧮 Recipe Scoring Algorithm
+## 🧮 Recipe Scoring & Recommendation Algorithm
 
+### CMAB (Contextual Multi-Armed Bandit) Layer
+Before scoring individual recipes, the system uses CMAB to select which recipe categories to explore:
+
+**Algorithm:** Thompson Sampling with Beta distributions
+- Each category maintains α (successes) and β (failures) parameters
+- System samples from Beta(α, β) for each category
+- Top categories are selected based on sampled values + context bonus
+
+**Context Features:**
+- `expiring_count`: Number of items expiring within 3 days
+- `total_items`: Total inventory size
+- `has_produce`, `has_protein`, `has_grains`: Ingredient type indicators
+- `inventory_diversity`: Normalized variety score
+
+**Exploration Strategy:**
+- New users (< 10 interactions): ε = 0.3 (30% random exploration)
+- Learning users (10-50 interactions): ε = 0.2
+- Experienced users (> 50 interactions): ε = 0.1
+
+### Recipe Scoring (within selected categories)
 Each recipe receives an **overall score (0-100)** based on:
 
-### 1. Inventory Match (40% weight)
+#### 1. Inventory Match (40% weight)
 - Percentage of recipe ingredients you already have
 - Higher match = Higher score
 
-### 2. Expiring Ingredient Urgency (30% weight)
+#### 2. Expiring Ingredient Urgency (30% weight)
 - Recipes using ingredients expiring soon get bonus points
 - Expired items: +10 points
 - Expires tomorrow: +8 points
 - Expires in 2 days: +5 points
 - Expires in 3 days: +3 points
 
-### 3. Partial Usage Optimization (15% weight)
+#### 3. Partial Usage Optimization (15% weight)
 - Recipes that use 50-100% of available quantities score higher
 - Helps avoid partial ingredient waste
 
-### 4. Feedback History (15% weight)
+#### 4. Feedback History (15% weight)
 - Upvotes: +2 points per upvote
 - Downvotes: -3 points per downvote
 - Skips: -1 point per skip
 
-### 5. Safety Multiplier
+#### 5. Safety Multiplier
 - **Allergen detected: 90% penalty** (score × 0.1)
 - Ensures unsafe recipes are heavily deprioritized
+
+### How CMAB Learns
+When you provide feedback, the system updates the category's Beta distribution:
+- **Reward = +2** (cooked): Large increase in α
+- **Reward = +1** (upvote): Moderate increase in α
+- **Reward = 0** (skip): Increase in β
+- **Reward = -1** (downvote): Large increase in β
+
+Over time, preferred categories get recommended more often!
 
 ---
 
@@ -379,15 +470,21 @@ POST /api/users/user_123/recipes/cooked
 }
 → Inventory automatically updated! Chicken and broccoli quantities reduced.
 
-# 6. User provides feedback
+# 6. User provides feedback (CMAB learns!)
 POST /api/users/user_123/feedback
 {
   "recipe_id": "12345",
+  "recipe_title": "Chicken Stir Fry",
+  "recipe_categories": ["asian", "quick_meals"],
   "feedback_type": "upvote"
 }
-→ Future recommendations improved based on this feedback!
+→ CMAB updates preferences for "asian" and "quick_meals" categories!
 
-# 7. Check expiring items
+# 7. Check CMAB learning statistics
+GET /api/users/user_123/cmab/statistics
+→ See which categories you prefer based on your feedback history
+
+# 8. Check expiring items
 GET /api/users/user_123/inventory/expiring?days=2
 → Get items expiring within 2 days for urgent cooking
 ```
@@ -448,16 +545,20 @@ curl -X POST http://localhost:8000/api/users/user_123/recipes/cooked \
 | Feature | Endpoint | Auto-Magic |
 |---------|----------|------------|
 | Add inventory | `POST /api/users/{id}/inventory` | ✨ Expiry auto-calculated |
-| Get recommendations | `GET /api/users/{id}/recommendations` | ✨ AI scoring + explanations |
-| Cook recipe | `POST /api/users/{id}/recipes/cooked` | ✨ Inventory auto-updated |
-| Submit feedback | `POST /api/users/{id}/feedback` | ✨ Reinforcement learning |
+| Get recommendations | `GET /api/users/{id}/recommendations` | ✨ CMAB category selection + AI scoring |
+| Cook recipe | `POST /api/users/{id}/recipes/cooked` | ✨ Inventory auto-updated + CMAB +2 reward |
+| Submit feedback | `POST /api/users/{id}/feedback` | ✨ CMAB learns preferences |
+| CMAB statistics | `GET /api/users/{id}/cmab/statistics` | ✨ View learned preferences |
 | Check expiring | `GET /api/users/{id}/inventory/expiring` | ✨ Smart alerts |
 
 ---
 
 ## 📚 Additional Resources
 
+- **CMAB Implementation**: See `CMAB_README.md` for detailed CMAB documentation
+- **API Optimization**: See `backend/OPTIMIZATION_NOTES.md` for API call optimizations
 - **Spoonacular API Docs**: https://spoonacular.com/food-api/docs
 - **Firebase Firestore**: https://firebase.google.com/docs/firestore
 - **Google AI Studio**: https://aistudio.google.com/app/apikey
 - **FastAPI Docs**: https://fastapi.tiangolo.com/
+- **Thompson Sampling**: Research paper on contextual bandits and Thompson Sampling
