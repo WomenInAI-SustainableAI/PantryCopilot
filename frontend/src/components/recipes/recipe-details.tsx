@@ -264,12 +264,9 @@ export default function RecipeDetails({
               )}
               <div className="p-6 text-left space-y-2">
                 <SheetTitle className="font-headline text-3xl">{normalized.title}</SheetTitle>
-                <SheetDescription>
-                  <div
-                    className="text-sm leading-relaxed"
-                    dangerouslySetInnerHTML={{ __html: sanitizedDescription }}
-                  />
-                </SheetDescription>
+                {/* Render sanitized HTML directly in a div to avoid invalid nesting (SheetDescription
+                    may render a <p>, and putting block elements inside a <p> causes hydration errors). */}
+                <div className="text-sm text-muted-foreground leading-relaxed" dangerouslySetInnerHTML={{ __html: sanitizedDescription }} />
               </div>
             </SheetHeader>
             <div className="p-6 space-y-6">

@@ -58,7 +58,7 @@ export default function Dashboard() {
         
     // Load recommendations from API (limit to 3)
     setLoadingRecommendations(true);
-    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/users/${user.id}/recommendations?limit=3`);
+    const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/users/${user.id}/recommendations?limit=3`);
         if (response.ok) {
           const data = await response.json();
           setRecipes(data.recommendations || []);
@@ -138,30 +138,45 @@ export default function Dashboard() {
       expiringSoonItems.map(i => i.name.toLowerCase())
     );
 
+    
+
     const updatedRecipes = recipes.map(recipe => {
       let weightedMatchSum = 0;
       let expiringMatches = 0;
       let totalPossibleWeight = 0;
 
       (recipe.ingredients || []).forEach(ingredient => {
-        if (!ingredient?.name) return;
-        const inventoryItem = inventoryMap.get(ingredient.name.toLowerCase());
+        // Support both string ingredient names (e.g. ["milk", "sugar"]) and
+        // object ingredients (e.g. [{ name: "milk", quantity: 1 }]).
+        const rawName = typeof ingredient === "string" ? ingredient : ingredient?.name;
+        if (!rawName) return;
+        const nameKey = String(rawName).toLowerCase().trim();
+        const inventoryItem = inventoryMap.get(nameKey);
         const weight = 1;
         totalPossibleWeight += weight;
 
-        if (inventoryItem && ingredient.quantity) {
-          const quantityRatio = Math.min(inventoryItem.quantity / ingredient.quantity, 1.0);
+        // Match score: only compute ratio when recipe specifies a numeric quantity and we have inventory
+        const hasNumericQty = typeof ingredient === "object" && ingredient !== null && (ingredient as any).quantity !== undefined;
+        if (inventoryItem && hasNumericQty) {
+          const recipeQty = Number((ingredient as any).quantity || 0);
+          // avoid division by zero
+          const quantityRatio = recipeQty > 0 ? Math.min(inventoryItem.quantity / recipeQty, 1.0) : 1.0;
           weightedMatchSum += quantityRatio * weight;
+        }
 
-          if (expiringSoonNames.has(ingredient.name.toLowerCase())) {
-            expiringMatches++;
-          }
+        // Expiring match: count any ingredient that exists in inventory and is expiring soon,
+        // regardless of the recipe-specified quantity. This helps show expiring badges even when
+        // ingredient quantities are 0/undefined in the recipe payload.
+        if (inventoryItem && expiringSoonNames.has(nameKey)) {
+          expiringMatches++;
         }
       });
       
       const matchPercentage = totalPossibleWeight > 0 ? (weightedMatchSum / totalPossibleWeight) * 100 : 0;
       const expiringIngredientBonus = expiringMatches * 10;
       const score = matchPercentage + expiringIngredientBonus;
+
+      
 
       return {
         ...recipe,

@@ -2,7 +2,7 @@ import { ExplainRecipeRecommendationInput, ExplainRecipeRecommendationOutput } f
 import { ImproveRecommendationsFromFeedbackInput, ImproveRecommendationsFromFeedbackOutput } from '@/ai/flows/improve-recommendations-from-feedback'
 import { InventoryItem, AddInventoryRequest, UserPreferences, UserSettings } from '@/lib/types'
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const API_BASE = process.env.NEXT_PUBLIC_BASE_URL;
 
 export async function getRecipeExplanation(input: ExplainRecipeRecommendationInput): Promise<ExplainRecipeRecommendationOutput> {
     try {

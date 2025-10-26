@@ -58,6 +58,21 @@ export default function RecipeCard({ recipe, onSelectRecipe }: RecipeCardProps) 
   const placeholderImage = PlaceHolderImages.find((img) => img.id === recipe.imageId);
   const imageUrl = spoonacularImage || placeholderImage?.imageUrl;
 
+  // Normalize match percentage: backend sometimes returns a number or a string
+  // (e.g. "80" or "80%"), so coerce to a numeric value and strip non-numeric
+  // characters before rounding to avoid rendering duplicate percent signs.
+  const rawMatch = recipe.matchPercentage ?? 0;
+  const numericMatch = (() => {
+    if (typeof rawMatch === 'number') return rawMatch;
+    try {
+      const cleaned = String(rawMatch).replace(/[^0-9.-]+/g, '');
+      const n = Number(cleaned);
+      return isNaN(n) ? 0 : n;
+    } catch {
+      return 0;
+    }
+  })();
+
   return (
     <Card
       className="overflow-hidden flex flex-col cursor-pointer hover:shadow-lg transition-shadow duration-300"
@@ -74,23 +89,23 @@ export default function RecipeCard({ recipe, onSelectRecipe }: RecipeCardProps) 
           />
         )}
         <div className="absolute top-2 right-2 flex flex-col gap-2">
-            <Badge className="bg-primary/90 text-primary-foreground border-primary-foreground/20 backdrop-blur-sm">
-                <Percent className="w-3 h-3 mr-1" />
-                {recipe.matchPercentage}% Match
-            </Badge>
-            {recipe.expiringIngredientsCount && recipe.expiringIngredientsCount > 0 ? (
-                <Badge variant="destructive">
-                    <Flame className="w-3 h-3 mr-1" />
-                    {recipe.expiringIngredientsCount} Expiring
-                </Badge>
-            ) : null}
+          <Badge className="bg-primary/90 text-primary-foreground border-primary-foreground/20 backdrop-blur-sm flex items-center justify-center text-center">
+            <span className="text-xs font-semibold">{Math.round(numericMatch)}% match</span>
+          </Badge>
+      {/* Show expiring badge only when the count is explicitly > 0. */}
+      {(recipe.expiringIngredientsCount ?? 0) > 0 ? (
+        <Badge variant="destructive">
+          <Flame className="w-3 h-3 mr-1" />
+          {recipe.expiringIngredientsCount} Expiring
+        </Badge>
+      ) : null}
         </div>
       </CardHeader>
       <CardContent className="p-4 flex-grow">
         <h3 className="font-headline text-lg font-semibold leading-tight">
           {recipe.title}
         </h3>
-  <p className="text-sm text-muted-foreground mt-1 line-clamp-2" dangerouslySetInnerHTML={{ __html: sanitizeHtmlForCard(recipe.description || '') }} />
+        <div className="text-sm text-muted-foreground mt-1 line-clamp-2" dangerouslySetInnerHTML={{ __html: sanitizeHtmlForCard(recipe.description || '') }} />
       </CardContent>
       <CardFooter className="p-4 pt-0">
         <Button className="w-full" variant="default">View Recipe</Button>
