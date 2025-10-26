@@ -16,7 +16,7 @@ from src.db.models import (
     UserCreate, User, UserLogin, UserResponse,
     AllergyCreate, Allergy,
     InventoryItem, InventoryItemUpdate,
-    UserFeedbackCreate, UserFeedback
+    UserFeedbackCreate, UserFeedback, FeedbackType
 )
 from src.auth import hash_password, verify_password
 
@@ -35,8 +35,12 @@ def get_user_by_email(email: str):
 from src.services.inventory_service import add_inventory_item, subtract_inventory_items, get_expiring_soon
 from src.services.recommendation_service import (
     get_personalized_recommendations,
-    get_recommendations_by_preferences
+    get_recommendations_by_preferences,
+    update_cmab_with_feedback
 )
+from src.db.crud.cmab import CMABCRUD
+from src.services.cmab_service import RecipeCategory
+from src.services.spoonacular_service import get_recipe_information
 
 # Load environment variables
 load_dotenv()
@@ -271,70 +275,138 @@ class CookedRecipeRequest(BaseModel):
 async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
     """
     Mark recipe as cooked - AUTOMATICALLY SUBTRACTS INGREDIENTS FROM INVENTORY.
+    Also updates CMAB model with positive reward.
     
     This endpoint:
-    1. Fetches recipe ingredient quantities from Spoonacular
-    2. Adjusts quantities based on servings made
-    3. Subtracts ingredients from user inventory
-    4. Returns status of each ingredient update
+    1. Fetches recipe information from Spoonacular (single API call)
+    2. Extracts ingredient quantities and categories from response
+    3. Adjusts quantities based on servings made
+    4. Subtracts ingredients from user inventory
+    5. Updates CMAB with "cooked" reward (+2)
+    6. Returns status of each ingredient update
     """
-    from src.services.spoonacular_service import get_recipe_ingredients_by_id
     
-    # Get recipe ingredients with quantities
-    recipe_ingredients_data = await get_recipe_ingredients_by_id(int(request.recipe_id))
+    # Get recipe info - single API call contains all needed data
+    recipe_info = await get_recipe_information(int(request.recipe_id))
     
-    # Extract ingredient quantities
+    # Extract ingredient quantities from extendedIngredients
     ingredient_quantities = {}
-    for ingredient in recipe_ingredients_data.get("ingredients", []):
+    for ingredient in recipe_info.get("extendedIngredients", []):
         name = ingredient.get("name", "")
-        amount = ingredient.get("amount", {}).get("metric", {}).get("value", 0)
+        # Get amount in metric units
+        amount = ingredient.get("measures", {}).get("metric", {}).get("amount", 0)
         
         # Adjust for servings
-        # Assuming recipe is for default servings, scale proportionally
-        adjusted_amount = amount * request.servings_made
+        # Scale based on servings made vs recipe's default servings
+        recipe_servings = recipe_info.get("servings", 1)
+        adjusted_amount = (amount / recipe_servings) * request.servings_made
         
         if name and adjusted_amount > 0:
             ingredient_quantities[name] = adjusted_amount
     
+    # Classify recipe for CMAB
+    recipe_tags = recipe_info.get("dishTypes", []) + recipe_info.get("cuisines", [])
+    recipe_categories = RecipeCategory.classify_recipe(
+        recipe_info.get("title", ""),
+        recipe_tags
+    )
+    
     # Subtract from inventory
     results = subtract_inventory_items(user_id, ingredient_quantities)
+    
+    # Update CMAB with positive reward for cooking
+    await update_cmab_with_feedback(
+        user_id=user_id,
+        recipe_id=request.recipe_id,
+        recipe_categories=recipe_categories,
+        feedback_type="upvote",
+        is_cooked=True  # +2 reward
+    )
     
     return {
         "recipe_id": request.recipe_id,
         "servings_made": request.servings_made,
+        "recipe_servings": recipe_info.get("servings", 1),
         "inventory_updates": results,
-        "message": "Inventory updated successfully"
+        "cmab_updated": True,
+        "message": "Inventory updated and preferences learned successfully"
     }
 
 
 # ========== FEEDBACK ENDPOINTS ==========
 
-# @app.post("/api/users/{user_id}/feedback", response_model=UserFeedback, status_code=201)
-# async def submit_feedback(user_id: str, feedback_data: UserFeedbackCreate):
-#     """
-#     Submit feedback for a recipe (upvote, downvote, skip).
-#     This feedback is used for reinforcement learning to improve recommendations.
-#     """
-#     # Save feedback to database
-#     feedback_record = feedback.create(user_id, feedback_data)
-    
-#     # Process feedback through AI flow for learning
-#     try:
-#         await improve_recommendations_from_feedback(
-#             recipe_id=feedback_data.recipe_id,
-#             feedback_type=feedback_data.feedback_type.value,
-#             user_id=user_id
-#         )
-#     except Exception as e:
-#         print(f"Error processing feedback through AI: {e}")
-    
-#     return feedback_record
+class FeedbackRequest(BaseModel):
+    """Request model for submitting recipe feedback."""
+    recipe_id: str = Field(..., description="Recipe ID")
+    recipe_title: str = Field(..., description="Recipe title")
+    recipe_categories: List[str] = Field(default=["general"], description="Recipe categories")
+    feedback_type: str = Field(..., description="Feedback type: upvote, downvote, skip")
 
 
-# @app.get("/api/users/{user_id}/feedback", response_model=List[UserFeedback])
-# async def get_feedback_history(user_id: str):
-#     """Get all feedback submitted by a user."""
-#     return feedback.list_by_user(user_id)
+@app.post("/api/users/{user_id}/feedback", response_model=UserFeedback, status_code=201)
+async def submit_feedback(user_id: str, feedback_data: FeedbackRequest):
+    """
+    Submit feedback for a recipe (upvote, downvote, skip).
+    This feedback is used by CMAB to learn user preferences.
+    
+    Reward scheme:
+    - Upvote (👍): +1
+    - Downvote (👎): -1
+    - Skip/Ignored: 0
+    - Cooked: +2 (handled in /cooked endpoint)
+    """
+    # Save feedback to database
+    feedback_create = UserFeedbackCreate(
+        recipe_id=feedback_data.recipe_id,
+        feedback_type=FeedbackType(feedback_data.feedback_type)
+    )
+    feedback_record = feedback.create(user_id, feedback_create)
+    
+    # Update CMAB model with feedback
+    try:
+        await update_cmab_with_feedback(
+            user_id=user_id,
+            recipe_id=feedback_data.recipe_id,
+            recipe_categories=feedback_data.recipe_categories,
+            feedback_type=feedback_data.feedback_type,
+            is_cooked=False
+        )
+    except Exception as e:
+        print(f"Error updating CMAB with feedback: {e}")
+    
+    return feedback_record
+
+
+@app.get("/api/users/{user_id}/feedback", response_model=List[UserFeedback])
+async def get_feedback_history(user_id: str):
+    """Get all feedback submitted by a user."""
+    return feedback.list_by_user(user_id)
+
+
+@app.get("/api/users/{user_id}/cmab/statistics")
+async def get_cmab_statistics(user_id: str):
+    """
+    Get CMAB statistics for a user.
+    
+    Shows learning progress for each recipe category:
+    - Number of times recommended
+    - Total reward received
+    - Mean reward
+    - Expected value (Beta distribution)
+    """
+    stats = CMABCRUD.get_statistics(user_id)
+    
+    # Sort by pulls (most recommended categories first)
+    sorted_stats = dict(sorted(
+        stats.items(),
+        key=lambda x: x[1]["pulls"],
+        reverse=True
+    ))
+    
+    return {
+        "user_id": user_id,
+        "categories": sorted_stats
+    }
 
 
 # ========== RECIPE DETAILS ENDPOINT ==========
