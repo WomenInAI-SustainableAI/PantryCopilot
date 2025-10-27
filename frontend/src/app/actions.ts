@@ -19,16 +19,37 @@ export async function getRecipeExplanation(input: ExplainRecipeRecommendationInp
 }
 
 export async function submitFeedback(input: ImproveRecommendationsFromFeedbackInput): Promise<ImproveRecommendationsFromFeedbackOutput> {
-     try {
-        const response = await fetch(`${API_BASE}/feedback`, {
+    try {
+        const url = `${API_BASE}/api/users/${input.userId}/feedback`;
+        const payload = {
+            recipe_id: input.recipeId,
+            recipe_title: input.recipeTitle || "",
+            recipe_categories: input.recipeCategories && input.recipeCategories.length > 0 ? input.recipeCategories : ["general"],
+            feedback_type: input.feedbackType,
+        };
+
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(input)
-        })
-        return await response.json()
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            // Try to parse error message, fallback to status text
+            let message = response.statusText || 'Failed to submit feedback.';
+            try {
+                const data = await response.json();
+                message = (data && (data.message || data.detail)) || message;
+            } catch {}
+            return { success: false, message };
+        }
+
+        // Backend returns a UserFeedback object; map to our simple success shape
+        await response.json();
+        return { success: true, message: 'Thanks! Your feedback helps improve recommendations.' };
     } catch (error) {
-        console.error("Error submitting feedback:", error);
-        return { success: false, message: "Failed to submit feedback due to an internal error." };
+        console.error('Error submitting feedback:', error);
+        return { success: false, message: 'Failed to submit feedback due to an internal error.' };
     }
 }
 

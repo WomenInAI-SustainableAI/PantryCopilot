@@ -117,6 +117,7 @@ export default function RecipeDetails({
 }: RecipeDetailsProps) {
   const { toast } = useToast();
   const [feedbackSubmitted, setFeedbackSubmitted] = useState<"upvote" | "downvote" | null>(null);
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
 
   const normalized = useMemo(() => normalizeRecipe(recipe), [recipe]);
 
@@ -202,7 +203,11 @@ export default function RecipeDetails({
   }, [inventory, normalized.ingredients, expiringIngredients, userPreferences?.allergies]);
 
   const handleFeedback = async (feedbackType: "upvote" | "downvote") => {
-    if (feedbackSubmitted) return;
+    // If the same button is clicked again, do nothing (no-op)
+    if (feedbackSubmitted === feedbackType) return;
+    if (isSubmittingFeedback) return;
+    setIsSubmittingFeedback(true);
+    // Optimistically set selection so UI reflects intent immediately
     setFeedbackSubmitted(feedbackType);
 
     const result = await submitFeedback({
@@ -210,6 +215,12 @@ export default function RecipeDetails({
       // submitFeedback expects a FeedbackType; cast here to satisfy the API surface
       feedbackType: feedbackType as any,
       userId: userPreferences.userId,
+      recipeTitle: normalized.title,
+      // Try to include categories when available from raw recipe payload
+      recipeCategories: [
+        ...((recipe as any)?.dishTypes || []),
+        ...((recipe as any)?.cuisines || []),
+      ].filter(Boolean),
     });
     
     toast({
@@ -217,6 +228,11 @@ export default function RecipeDetails({
       description: result.message,
       variant: result.success ? "default" : "destructive",
     });
+    if (!result.success) {
+      // allow retry if there was an error
+      setFeedbackSubmitted(null);
+    }
+    setIsSubmittingFeedback(false);
   };
 
   const handleCookClick = () => {
@@ -342,7 +358,7 @@ export default function RecipeDetails({
           variant={feedbackSubmitted === "upvote" ? "default" : "outline"}
           size="icon"
           onClick={() => handleFeedback("upvote")}
-          disabled={!!feedbackSubmitted}
+          disabled={isSubmittingFeedback}
         >
           <ThumbsUp className="h-4 w-4" />
         </Button>
@@ -350,7 +366,7 @@ export default function RecipeDetails({
           variant={feedbackSubmitted === "downvote" ? "destructive" : "outline"}
           size="icon"
           onClick={() => handleFeedback("downvote")}
-          disabled={!!feedbackSubmitted}
+          disabled={isSubmittingFeedback}
         >
           <ThumbsDown className="h-4 w-4" />
         </Button>

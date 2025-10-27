@@ -8,6 +8,9 @@ export interface ImproveRecommendationsFromFeedbackInput {
   recipeId: string;
   feedbackType: FeedbackType;
   userId: string;
+  // Optional extras to enrich backend request
+  recipeTitle?: string;
+  recipeCategories?: string[];
 }
 
 export interface ImproveRecommendationsFromFeedbackOutput {

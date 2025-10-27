@@ -33,7 +33,7 @@ export default function PreferencesDialog({
   const [allergies, setAllergies] = useState(preferences.allergies.join(", "));
   const [dislikes, setDislikes] = useState(preferences.dislikes.join(", "));
   const [dietaryRestrictions, setDietaryRestrictions] = useState(preferences.dietaryRestrictions?.join(", ") || "");
-  const [cookingSkillLevel, setCookingSkillLevel] = useState(preferences.cookingSkillLevel || "beginner");
+  const [cookingSkillLevel, setCookingSkillLevel] = useState<'beginner' | 'intermediate' | 'advanced'>(preferences.cookingSkillLevel || "beginner");
   const [preferredCuisines, setPreferredCuisines] = useState(preferences.preferredCuisines?.join(", ") || "");
 
   const handleSave = async () => {
@@ -73,7 +73,10 @@ export default function PreferencesDialog({
           <TabsContent value="cooking" className="space-y-4">
             <div className="grid gap-2">
               <Label htmlFor="skill-level">Cooking Skill Level</Label>
-              <Select value={cookingSkillLevel} onValueChange={setCookingSkillLevel}>
+              <Select
+                value={cookingSkillLevel}
+                onValueChange={(v) => setCookingSkillLevel(v as 'beginner' | 'intermediate' | 'advanced')}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select your skill level" />
                 </SelectTrigger>
@@ -106,21 +109,21 @@ export default function PreferencesDialog({
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="dislikes">Dislikes</Label>
-              <Textarea
-                id="dislikes"
-                placeholder="e.g., cilantro, olives"
-                value={dislikes}
-                onChange={(e) => setDislikes(e.target.value)}
-              />
-            </div>
-            <div className="grid gap-2">
               <Label htmlFor="dietary-restrictions">Dietary Restrictions</Label>
               <Textarea
                 id="dietary-restrictions"
                 placeholder="e.g., vegetarian, vegan, gluten-free"
                 value={dietaryRestrictions}
                 onChange={(e) => setDietaryRestrictions(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="dislikes">Dislikes</Label>
+              <Textarea
+                id="dislikes"
+                placeholder="e.g., cilantro, olives"
+                value={dislikes}
+                onChange={(e) => setDislikes(e.target.value)}
               />
             </div>
           </TabsContent>

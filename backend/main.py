@@ -498,22 +498,38 @@ async def submit_feedback(user_id: str, feedback_data: FeedbackRequest):
     - Skip/Ignored: 0
     - Cooked: +2 (handled in /cooked endpoint)
     """
-    # Save feedback to database
+    # Save or update feedback to database (toggle-safe upsert)
     feedback_create = UserFeedbackCreate(
         recipe_id=feedback_data.recipe_id,
         feedback_type=FeedbackType(feedback_data.feedback_type)
     )
-    feedback_record = feedback.create(user_id, feedback_create)
+    # Get previous latest feedback (if any) to detect changes
+    try:
+        prev = feedback.get_by_recipe(user_id, feedback_data.recipe_id)
+    except AttributeError:
+        prev = None
+
+    # Use upsert to avoid creating duplicate records for the same recipe
+    try:
+        feedback_record = feedback.upsert_by_recipe(user_id, feedback_create)
+    except AttributeError:
+        # Fallback for environments without the upsert method
+        feedback_record = feedback.create(user_id, feedback_create)
     
     # Update CMAB model with feedback
     try:
-        await update_cmab_with_feedback(
-            user_id=user_id,
-            recipe_id=feedback_data.recipe_id,
-            recipe_categories=feedback_data.recipe_categories,
-            feedback_type=feedback_data.feedback_type,
-            is_cooked=False
-        )
+        # Only update CMAB if this action changes the latest feedback type
+        changed = True
+        if prev and prev.feedback_type.value == feedback_data.feedback_type:
+            changed = False
+        if changed:
+            await update_cmab_with_feedback(
+                user_id=user_id,
+                recipe_id=feedback_data.recipe_id,
+                recipe_categories=feedback_data.recipe_categories,
+                feedback_type=feedback_data.feedback_type,
+                is_cooked=False
+            )
     except Exception as e:
         print(f"Error updating CMAB with feedback: {e}")
     

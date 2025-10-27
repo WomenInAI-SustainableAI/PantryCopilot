@@ -44,6 +44,58 @@ class UserFeedbackCRUD:
         ).document(feedback_id).set(feedback_dict)
         
         return UserFeedback(**feedback_dict)
+
+    @staticmethod
+    def upsert_by_recipe(user_id: str, feedback_data: UserFeedbackCreate) -> UserFeedback:
+        """
+        Update existing feedback for a recipe (latest entry) or create a new one if none exists.
+
+        Ensures only a single feedback record per user+recipe is effectively used going forward,
+        avoiding duplicate historical entries when toggling like/dislike.
+
+        Note: This method updates the existing document's feedback_type and timestamp to "now"
+        rather than creating a new document when one already exists.
+        """
+        # Prefer a simple lookup without ordering to avoid composite index requirements
+        existing = None
+        try:
+            simple_docs = (
+                db.collection(UserFeedbackCRUD.USERS_COLLECTION)
+                .document(user_id)
+                .collection(UserFeedbackCRUD.FEEDBACK_SUBCOLLECTION)
+                .where(filter=FieldFilter("recipe_id", "==", feedback_data.recipe_id))
+                .limit(1)
+                .get()
+            )
+            for doc in simple_docs:
+                existing = UserFeedback(**doc.to_dict())
+                break
+        except Exception:
+            existing = UserFeedbackCRUD.get_by_recipe(user_id, feedback_data.recipe_id)
+        now = datetime.utcnow()
+        if existing:
+            # If the feedback type is unchanged, return as-is
+            if existing.feedback_type == feedback_data.feedback_type:
+                return existing
+            # Update existing document with new type and refresh timestamp
+            doc_ref = (
+                db.collection(UserFeedbackCRUD.USERS_COLLECTION)
+                .document(user_id)
+                .collection(UserFeedbackCRUD.FEEDBACK_SUBCOLLECTION)
+                .document(existing.id)
+            )
+            updated = {
+                "id": existing.id,
+                "user_id": user_id,
+                "recipe_id": feedback_data.recipe_id,
+                "feedback_type": feedback_data.feedback_type.value,
+                # reuse created_at as the latest update moment to maintain ordering semantics
+                "created_at": now,
+            }
+            doc_ref.set(updated)
+            return UserFeedback(**updated)
+        # No existing record; create a new one
+        return UserFeedbackCRUD.create(user_id, feedback_data)
     
     @staticmethod
     def get(user_id: str, feedback_id: str) -> Optional[UserFeedback]:
@@ -104,15 +156,26 @@ class UserFeedbackCRUD:
         Returns:
             Feedback if found, None otherwise
         """
-        docs = (
-            db.collection(UserFeedbackCRUD.USERS_COLLECTION)
-            .document(user_id)
-            .collection(UserFeedbackCRUD.FEEDBACK_SUBCOLLECTION)
-            .where(filter=FieldFilter("recipe_id", "==", recipe_id))
-            .order_by("created_at", direction="DESCENDING")
-            .limit(1)
-            .get()
-        )
+        try:
+            docs = (
+                db.collection(UserFeedbackCRUD.USERS_COLLECTION)
+                .document(user_id)
+                .collection(UserFeedbackCRUD.FEEDBACK_SUBCOLLECTION)
+                .where(filter=FieldFilter("recipe_id", "==", recipe_id))
+                .order_by("created_at", direction="DESCENDING")
+                .limit(1)
+                .get()
+            )
+        except Exception:
+            # Fallback without ordering to reduce index requirements
+            docs = (
+                db.collection(UserFeedbackCRUD.USERS_COLLECTION)
+                .document(user_id)
+                .collection(UserFeedbackCRUD.FEEDBACK_SUBCOLLECTION)
+                .where(filter=FieldFilter("recipe_id", "==", recipe_id))
+                .limit(1)
+                .get()
+            )
         
         for doc in docs:
             return UserFeedback(**doc.to_dict())

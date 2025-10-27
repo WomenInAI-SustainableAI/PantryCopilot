@@ -275,7 +275,7 @@ export default function InventoryDialog({
                       <SelectTrigger id="unit">
                         <SelectValue placeholder="Select unit" />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="max-h-48 overflow-y-auto">
                         {availableUnits.map((u) => (
                           <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>
                         ))}
