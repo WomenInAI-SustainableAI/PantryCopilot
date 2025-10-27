@@ -7,19 +7,17 @@ import {
   SheetContent,
   SheetHeader,
   SheetTitle,
-  SheetDescription,
   SheetFooter,
 } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { ThumbsUp, ThumbsDown, Sparkles, ChefHat } from "lucide-react";
+import { ThumbsUp, ThumbsDown, Sparkles, ChefHat, Clock, ShieldCheck, Leaf, CookingPot } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { Recipe, NormalizedRecipe, UserPreferences, InventoryFormItem, Ingredient } from "@/lib/types";
 import { PlaceHolderImages } from "@/lib/placeholder-images";
-import { getRecipeExplanation, submitFeedback } from "@/app/actions";
-import { Skeleton } from "../ui/skeleton";
+import { submitFeedback } from "@/app/actions";
+import { normalizeRecipe } from "@/lib/normalize-recipe";
 // Lightweight client-side sanitizer for a limited set of tags/attrs.
 // We avoid adding a runtime dependency here; this sanitizer keeps basic formatting and links.
 function sanitizeHtml(dirty: string): string {
@@ -97,62 +95,17 @@ interface RecipeDetailsProps {
   onCookRecipe: (recipe: NormalizedRecipe) => void;
 }
 
-// Helpers to normalize incoming recipe shapes from the backend/spoonacular
-function stripHtmlToSteps(html?: string): string[] {
-  if (!html) return [];
-  // Replace <li> with separator then strip tags
-  const withSep = html.replace(/<li[^>]*>/gi, "||").replace(/<\/li>/gi, "");
-  const text = withSep.replace(/<[^>]+>/g, "");
-  return text.split("||").map((s) => s.trim()).filter(Boolean);
+interface ExplanationInfo {
+  expiring: string[];
+  safe: boolean;
+  missing: Ingredient[];
+  partial: { name: string; remaining: number; unit: string }[];
+  moneySaved: number;
+  co2Saved: number;
+  foodSavedLbs: number;
 }
 
-// (kept HTML in description; we'll sanitize when rendering using DOMPurify)
-
-function normalizeRecipe(raw: any): NormalizedRecipe {
-  if (!raw) return { id: '', title: '', description: '', ingredients: [], instructions: [], imageId: '', matchPercentage: 0 } as NormalizedRecipe;
-
-  // Instructions: prefer analyzedInstructions -> steps, otherwise parse `instructions` HTML or coerce string -> array
-  let instructions: string[] = [];
-  if (Array.isArray(raw?.analyzedInstructions) && raw.analyzedInstructions.length) {
-    const steps = raw.analyzedInstructions[0]?.steps || [];
-    instructions = steps.map((s: any) => s?.step).filter(Boolean);
-  } else if (Array.isArray(raw?.instructions)) {
-    instructions = raw.instructions.filter(Boolean);
-  } else if (typeof raw?.instructions === "string") {
-    const parsed = stripHtmlToSteps(raw.instructions);
-    instructions = parsed.length ? parsed : raw.instructions.split("\n").map((s: string) => s.trim()).filter(Boolean);
-  }
-
-  // Ingredients: prefer extendedIngredients -> map to {name, quantity, unit}
-  let ingredients: Array<{ name: string; quantity: number; unit: string }> = [];
-  if (Array.isArray(raw?.extendedIngredients) && raw.extendedIngredients.length) {
-    ingredients = raw.extendedIngredients.map((ing: any) => ({
-      name: ing?.name || ing?.original || "",
-      quantity: typeof ing?.amount === "number" ? ing.amount : 0,
-      unit: ing?.unit || (ing?.measures?.metric?.unitShort) || "",
-    }));
-  } else if (Array.isArray(raw?.ingredients) && raw.ingredients.length) {
-    ingredients = raw.ingredients.map((i: any) =>
-      typeof i === "string" ? { name: i, quantity: 0, unit: "" } : { name: i?.name || "", quantity: i?.quantity ?? 0, unit: i?.unit || "" }
-    );
-  }
-
-  const matchPercentage = raw?.scoring?.match_percentage ?? raw?.matchPercentage ?? raw?.scoring?.matchPercentage ?? 0;
-
-  // Build a Recipe-shaped object
-  const recipeObj: NormalizedRecipe = {
-    id: raw?.id ? String(raw.id) : (raw?.recipeId ? String(raw.recipeId) : ''),
-  title: raw?.title || '',
-  description: raw?.summary || raw?.description || '',
-    ingredients: ingredients as any,
-    instructions,
-    imageId: raw?.imageId || '',
-    image: raw?.image || raw?.imageUrl,
-    matchPercentage: matchPercentage,
-  };
-
-  return recipeObj;
-}
+// (kept HTML in description; we'll sanitize when rendering)
 
 export default function RecipeDetails({
   recipe,
@@ -163,8 +116,6 @@ export default function RecipeDetails({
   onCookRecipe,
 }: RecipeDetailsProps) {
   const { toast } = useToast();
-  const [explanation, setExplanation] = useState<string>("");
-  const [isLoadingExplanation, setIsLoadingExplanation] = useState<boolean>(true);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState<"upvote" | "downvote" | null>(null);
 
   const normalized = useMemo(() => normalizeRecipe(recipe), [recipe]);
@@ -196,25 +147,59 @@ export default function RecipeDetails({
     );
   }, [inventory, normalized.ingredients]);
 
-  useEffect(() => {
-    if (recipe) {
-      setIsLoadingExplanation(true);
-      setFeedbackSubmitted(null);
-      const fetchExplanation = async () => {
-        const result = await getRecipeExplanation({
-          recipeName: normalized.title,
-          expiringIngredients,
-          allergies: userPreferences.allergies,
-          inventoryMatchPercentage: normalized.matchPercentage ?? 0,
-          missingIngredients: missingIngredients.map((i: Ingredient) => i.name),
-        });
-        setExplanation(result.explanation);
-        setIsLoadingExplanation(false);
-      };
+  // Client-side explanation info (inspired by v2)
+  const explanationInfo = useMemo<ExplanationInfo>(() => {
+    const inventoryMap = new Map<string, InventoryFormItem>((inventory || []).map(item => [
+      (item?.name || '').toLowerCase(),
+      item
+    ]));
 
-      fetchExplanation();
-    }
-  }, [recipe, expiringIngredients, userPreferences, missingIngredients]);
+    const allergySet = new Set((userPreferences?.allergies || []).map(a => (a || '').toLowerCase()));
+    const hasAllergens = (normalized.ingredients || []).some((ing) => allergySet.has((ing?.name || '').toLowerCase()));
+
+    const missing: Ingredient[] = [];
+    const partial: { name: string; remaining: number; unit: string }[] = [];
+    let moneySaved = 0;
+    let foodSavedLbs = 0;
+
+    (normalized.ingredients || []).forEach((ing) => {
+      const name = (ing?.name || '').toLowerCase();
+      const invItem = inventoryMap.get(name);
+      const qtyInv = invItem?.quantity ?? 0;
+      const qtyNeeded = ing?.quantity ?? 0;
+
+      if (qtyInv < qtyNeeded) {
+        // deficit is needed minus available
+        missing.push({ ...ing, quantity: Math.max(qtyNeeded - qtyInv, 0) });
+      } else {
+        // Simple placeholder economics/environmental estimates
+        const pricePerUnit = 2.5; // $ per unit (placeholder)
+        const weightPerUnit = 0.5; // lbs per unit (placeholder)
+        moneySaved += qtyNeeded * pricePerUnit;
+        foodSavedLbs += qtyNeeded * weightPerUnit;
+
+        if (qtyInv > qtyNeeded) {
+          partial.push({
+            name: ing.name,
+            remaining: qtyInv - qtyNeeded,
+            unit: ing.unit || '',
+          });
+        }
+      }
+    });
+
+    const co2Saved = foodSavedLbs * 2.5; // kg CO2e per lb food waste avoided (placeholder)
+
+    return {
+      expiring: expiringIngredients,
+      safe: !hasAllergens,
+      missing,
+      partial,
+      moneySaved: parseFloat(moneySaved.toFixed(2)),
+      co2Saved: parseFloat(co2Saved.toFixed(2)),
+      foodSavedLbs: parseFloat(foodSavedLbs.toFixed(2)),
+    };
+  }, [inventory, normalized.ingredients, expiringIngredients, userPreferences?.allergies]);
 
   const handleFeedback = async (feedbackType: "upvote" | "downvote") => {
     if (feedbackSubmitted) return;
@@ -274,15 +259,53 @@ export default function RecipeDetails({
                 <h3 className="font-headline text-lg font-semibold mb-3 flex items-center">
                     <Sparkles className="w-5 h-5 mr-2 text-primary" /> Why This Recipe?
                 </h3>
-                {isLoadingExplanation ? (
-                    <div className="space-y-2">
-                        <Skeleton className="h-4 w-full" />
-                        <Skeleton className="h-4 w-full" />
-                        <Skeleton className="h-4 w-3/4" />
+                <div className="bg-muted/50 p-4 rounded-lg border space-y-4">
+                  {explanationInfo.expiring.length > 0 && (
+                    <div className="flex items-start gap-3">
+                      <Clock className="w-5 h-5 mt-0.5 text-destructive flex-shrink-0" />
+                      <div>
+                        <h4 className="font-semibold text-foreground">Urgency</h4>
+                        <p className="text-sm text-muted-foreground">Helps you use up <span className="font-medium text-foreground">{explanationInfo.expiring.join(', ')}</span> before it expires.</p>
+                      </div>
                     </div>
-                ) : (
-                    <p className="text-sm text-muted-foreground bg-muted p-4 rounded-lg">{explanation}</p>
-                )}
+                  )}
+                  <div className="flex items-start gap-3">
+                    <ShieldCheck className={`w-5 h-5 mt-0.5 ${explanationInfo.safe ? 'text-green-600' : 'text-destructive'} flex-shrink-0`} />
+                    <div>
+                      <h4 className="font-semibold text-foreground">Safety</h4>
+                      {explanationInfo.safe ? (
+                        <p className="text-sm text-muted-foreground">This recipe appears to be safe and doesn't contain your listed allergens.</p>
+                      ) : (
+                        <p className="text-sm font-medium text-destructive">Warning! This recipe may contain ingredients you are allergic to. Please review carefully.</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <Leaf className="w-5 h-5 mt-0.5 text-green-600 flex-shrink-0" />
+                    <div>
+                      <h4 className="font-semibold text-foreground">Estimated Impact</h4>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                        <span><strong className="text-foreground">${explanationInfo.moneySaved}</strong> saved</span>
+                        <span><strong className="text-foreground">{explanationInfo.co2Saved} kg</strong> CO2 avoided</span>
+                        <span><strong className="text-foreground">{explanationInfo.foodSavedLbs} lbs</strong> food saved</span>
+                      </div>
+                    </div>
+                  </div>
+                  {(explanationInfo.missing.length > 0 || explanationInfo.partial.length > 0) && (
+                    <div className="flex items-start gap-3">
+                      <CookingPot className="w-5 h-5 mt-0.5 text-accent flex-shrink-0" />
+                      <div>
+                        <h4 className="font-semibold text-foreground">Ingredient Usage</h4>
+                        {explanationInfo.missing.length > 0 && (
+                          <p className="text-sm text-muted-foreground">You might need to buy: <span className="font-medium text-foreground">{explanationInfo.missing.map(i => `${i.name} (${i.quantity} ${i.unit})`).join(', ')}.</span></p>
+                        )}
+                        {explanationInfo.partial.length > 0 && (
+                          <p className="text-sm text-muted-foreground">You'll have some leftovers of: <span className="font-medium text-foreground">{explanationInfo.partial.map(i => `${i.name} (~${i.remaining} ${i.unit})`).join(', ')}.</span></p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
               <Separator />
               <div>

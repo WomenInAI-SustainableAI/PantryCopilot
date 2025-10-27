@@ -25,6 +25,9 @@ export interface AddInventoryRequest {
   item_name: string;
   quantity: number;
   unit?: string;
+  // Optional fields supported by the backend for better expiry control
+  purchase_date?: string; // YYYY-MM-DD
+  shelf_life_days?: number;
 }
 
 export interface Ingredient {

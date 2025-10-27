@@ -63,23 +63,44 @@ export default function InventoryDialog({
 
     try {
       const purchaseDate = new Date(newItem.purchaseDate);
-      const shelfLife = parseInt(newItem.shelfLife, 10);
-      const expiryDate = addDays(purchaseDate, shelfLife);
+      // If shelfLife not provided while editing, preserve existing shelf life based on current item
+      const derivedShelfLife = editingItem
+        ? (newItem.shelfLife
+            ? parseInt(newItem.shelfLife, 10)
+            : differenceInDays(new Date(editingItem.expiryDate), new Date(editingItem.purchaseDate)))
+        : parseInt(newItem.shelfLife, 10);
+      const shelfLife = isNaN(derivedShelfLife as any) ? 0 : derivedShelfLife;
+  const expiryDate = addDays(purchaseDate, shelfLife);
+  // Normalize to end-of-day like backend create does
+  const expiryEOD = new Date(expiryDate);
+  expiryEOD.setHours(23, 59, 59, 999);
 
       if (!user) throw new Error('User not authenticated');
       const userId = user.id;
       
       if (editingItem) {
-        // Update existing item via API
+        // Update existing item via API, including expiry_date
         const updatedItem = await updateInventoryItem(userId, editingItem.id, {
           item_name: newItem.name,
           quantity: parseFloat(newItem.quantity),
-          unit: newItem.unit
+          unit: newItem.unit,
+          // Send ISO string; backend (Pydantic) will parse to datetime
+          expiry_date: expiryEOD.toISOString(),
         });
-        
-        const updatedInventory = inventory.map(item => 
-          item.id === editingItem.id 
-            ? { ...item, name: updatedItem.item_name, quantity: updatedItem.quantity, unit: updatedItem.unit }
+
+        const updatedInventory = inventory.map(item =>
+          item.id === editingItem.id
+            ? {
+                ...item,
+                name: updatedItem.item_name,
+                quantity: updatedItem.quantity,
+                unit: updatedItem.unit,
+                // Prefer API response; fallback to computed value
+                expiryDate: updatedItem.expiry_date || expiryEOD.toISOString(),
+                // Keep purchaseDate as chosen in the form for consistency
+                purchaseDate: newItem.purchaseDate,
+                shelfLife: shelfLife,
+              }
             : item
         );
         onUpdateInventory(updatedInventory);
@@ -114,8 +135,8 @@ export default function InventoryDialog({
       });
       setEditingItem(null);
     } catch (error) {
-      console.error('Failed to add inventory item:', error);
-      alert('Failed to add item. Please try again.');
+      console.error('Failed to save inventory item:', error);
+      alert('Failed to save item. Please try again.');
     }
   };
 
@@ -249,12 +270,19 @@ export default function InventoryDialog({
                             size="icon"
                             onClick={() => {
                               setEditingItem(item);
+                              // Prefill purchaseDate from item and compute shelf life from existing dates
+                              const purchaseDateISO = item.purchaseDate ? new Date(item.purchaseDate) : new Date();
+                              const expiryDateISO = item.expiryDate ? new Date(item.expiryDate) : addDays(purchaseDateISO, 0);
+                              const currentShelfLife = Math.max(
+                                0,
+                                differenceInDays(expiryDateISO, purchaseDateISO)
+                              );
                               setNewItem({
                                 name: item.name,
                                 quantity: item.quantity.toString(),
                                 unit: item.unit,
-                                purchaseDate: format(new Date(), "yyyy-MM-dd"),
-                                shelfLife: "",
+                                purchaseDate: format(purchaseDateISO, "yyyy-MM-dd"),
+                                shelfLife: String(currentShelfLife),
                               });
                             }}
                           >

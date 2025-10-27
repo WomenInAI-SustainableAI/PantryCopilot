@@ -18,6 +18,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import RecipeCard from "@/components/recipes/recipe-card";
 import { differenceInDays, formatDistanceToNow } from "date-fns";
+import { Console } from "console";
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -32,6 +33,28 @@ export default function Dashboard() {
   });
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
+  const initialLoadCompleteRef = React.useRef(false);
+
+  const fetchRecommendations = React.useCallback(async (uid: string) => {
+    setLoadingRecommendations(true);
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/users/${uid}/recommendations?limit=3`);
+      if (response.ok) {
+        const data = await response.json();
+        // Normalize recipes so ingredients are consistently objects with name/quantity/unit
+        const { normalizeRecipe } = await import("@/lib/normalize-recipe");
+        const normalized = (data.recommendations || []).map((r: any) => normalizeRecipe(r));
+        setRecipes(normalized as any);
+      } else {
+        setRecipes([]);
+      }
+    } catch (error) {
+      console.error('Failed to load recommendations:', error);
+      setRecipes([]);
+    } finally {
+      setLoadingRecommendations(false);
+    }
+  }, []);
 
   const handleUpdateInventory = (newInventory: InventoryFormItem[]) => {
     setInventory(newInventory);
@@ -55,26 +78,19 @@ export default function Dashboard() {
           shelfLife: 7
         }));
         setInventory(formInventory);
-        
-    // Load recommendations from API (limit to 3)
-    setLoadingRecommendations(true);
-    const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/users/${user.id}/recommendations?limit=3`);
-        if (response.ok) {
-          const data = await response.json();
-          setRecipes(data.recommendations || []);
-        } else {
-          setRecipes([]);
-        }
+        // Load recommendations from API (limit to 3)
+        await fetchRecommendations(user.id);
       } catch (error) {
         console.error('Failed to load data:', error);
         setInventory([]);
         setRecipes([]);
       } finally {
         setLoadingRecommendations(false);
+        initialLoadCompleteRef.current = true;
       }
     };
     loadData();
-  }, [user]);
+  }, [user, fetchRecommendations]);
 
   const handleCookRecipe = (recipe: NormalizedRecipe) => {
     const updatedInventory = inventory.map(invItem => {
@@ -97,6 +113,15 @@ export default function Dashboard() {
   const handleUpdatePreferences = (newPreferences: UserPreferences) => {
     setUserPreferences(newPreferences);
   };
+
+  // Re-fetch recommendations when inventory or preferences change (debounced)
+  React.useEffect(() => {
+    if (!user || !initialLoadCompleteRef.current) return;
+    const handle = setTimeout(() => {
+      fetchRecommendations(user.id);
+    }, 500);
+    return () => clearTimeout(handle);
+  }, [inventory, userPreferences, user, fetchRecommendations]);
 
   // Load preferences and settings from API on mount
   React.useEffect(() => {
@@ -131,12 +156,70 @@ export default function Dashboard() {
   }, [inventory]);
 
   const recommendedRecipes = useMemo(() => {
+    // Normalize names to improve matching between inventory and recipe ingredients.
+    const normalizeName = (s: string) =>
+      String(s)
+        .toLowerCase()
+        // remove bracketed descriptors like "(whole)", "[chopped]", "{organic}"
+        .replace(/\(.*?\)|\[.*?\]|\{.*?\}/g, " ")
+        // remove punctuation
+        .replace(/[^a-z0-9\s]/g, " ")
+        // drop common stopwords
+        .replace(/\b(the|a|an)\b/g, " ")
+        // collapse whitespace
+        .replace(/\s+/g, " ")
+        .trim()
+        // naive singularization (eggs -> egg, tomatoes -> tomate -> not perfect but helps)
+        .replace(/s\b/g, "");
+
     const inventoryMap = new Map(
-      inventory.map(item => [item.name.toLowerCase(), item])
+      inventory.map(item => [normalizeName(item.name), item])
     );
     const expiringSoonNames = new Set(
-      expiringSoonItems.map(i => i.name.toLowerCase())
+      expiringSoonItems.map(i => normalizeName(i.name))
     );
+
+    // Build a small index for fuzzy matching using tokens
+    const tokenize = (s: string) => new Set(s.split(" ").filter(Boolean));
+    type InvIdx = { key: string; item: InventoryFormItem; tokens: Set<string> };
+    const inventoryIndex: InvIdx[] = Array.from(inventoryMap.entries()).map(([key, item]) => ({
+      key,
+      item,
+      tokens: tokenize(key),
+    }));
+
+    const jaccard = (a: Set<string>, b: Set<string>) => {
+      if (a.size === 0 && b.size === 0) return 1;
+      let inter = 0;
+      for (const t of a) if (b.has(t)) inter++;
+      const union = a.size + b.size - inter;
+      return union === 0 ? 0 : inter / union;
+    };
+
+    const findClosestInventory = (nameKey: string) => {
+      const exact = inventoryMap.get(nameKey);
+      if (exact) return { item: exact, key: nameKey, score: 1 } as const;
+      const tokens = tokenize(nameKey);
+      let best: { item: InventoryFormItem; key: string; score: number } | null = null;
+      for (const idx of inventoryIndex) {
+        // Overlap score based on tokens
+        let overlap = 0;
+        for (const t of idx.tokens) if (tokens.has(t)) overlap++;
+        const overlapScore = Math.max(
+          overlap / Math.max(1, idx.tokens.size),
+          overlap / Math.max(1, tokens.size)
+        );
+        // Jaccard similarity across tokens
+        const jac = jaccard(idx.tokens, tokens);
+        // Simple substring boost (handles phrases like "milanese chicken")
+        const substringBoost = nameKey.includes(idx.key) || idx.key.includes(nameKey) ? 0.2 : 0;
+        const score = Math.max(overlapScore, jac) + substringBoost;
+        if (!best || score > best.score) best = { item: idx.item, key: idx.key, score };
+      }
+      // Threshold tuned to be permissive but avoid unrelated matches
+      if (best && best.score >= 0.6) return best;
+      return null;
+    };
 
     
 
@@ -144,14 +227,16 @@ export default function Dashboard() {
       let weightedMatchSum = 0;
       let expiringMatches = 0;
       let totalPossibleWeight = 0;
-
+      console.log("Expiring:", Array.from(expiringSoonNames));
       (recipe.ingredients || []).forEach(ingredient => {
         // Support both string ingredient names (e.g. ["milk", "sugar"]) and
         // object ingredients (e.g. [{ name: "milk", quantity: 1 }]).
         const rawName = typeof ingredient === "string" ? ingredient : ingredient?.name;
+        console.log("ingredient:", rawName);
         if (!rawName) return;
-        const nameKey = String(rawName).toLowerCase().trim();
-        const inventoryItem = inventoryMap.get(nameKey);
+  const nameKey = normalizeName(String(rawName));
+  const closest = findClosestInventory(nameKey);
+  const inventoryItem = closest?.item;
         const weight = 1;
         totalPossibleWeight += weight;
 
@@ -167,7 +252,7 @@ export default function Dashboard() {
         // Expiring match: count any ingredient that exists in inventory and is expiring soon,
         // regardless of the recipe-specified quantity. This helps show expiring badges even when
         // ingredient quantities are 0/undefined in the recipe payload.
-        if (inventoryItem && expiringSoonNames.has(nameKey)) {
+        if (inventoryItem && closest && expiringSoonNames.has(closest.key)) {
           expiringMatches++;
         }
       });
