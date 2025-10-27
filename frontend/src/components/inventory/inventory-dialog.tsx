@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,13 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -22,7 +29,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { InventoryItem, InventoryFormItem } from "@/lib/types";
-import { addDays, differenceInDays, format } from "date-fns";
+import { addDays, differenceInDays, differenceInHours, format } from "date-fns";
+import { getExpiryInfo } from "@/lib/expiry";
 import { Badge } from "../ui/badge";
 import { PlusCircle, Trash2, Edit } from "lucide-react";
 import { addInventoryItem, deleteInventoryItem, updateInventoryItem } from "@/app/actions";
@@ -49,6 +57,59 @@ export default function InventoryDialog({
     purchaseDate: format(new Date(), "yyyy-MM-dd"),
     shelfLife: "",
   });
+  const [customUnit, setCustomUnit] = useState("");
+
+  const universalUnits = [
+    { value: "pcs", label: "pcs" },
+    { value: "piece", label: "piece" },
+    { value: "bunch", label: "bunch" },
+    { value: "clove", label: "clove" },
+    { value: "slice", label: "slice" },
+    { value: "can", label: "can" },
+    { value: "jar", label: "jar" },
+  ];
+  const metricUnits = [
+    { value: "ml", label: "ml" },
+    { value: "l", label: "l" },
+    { value: "g", label: "g" },
+    { value: "kg", label: "kg" },
+  ];
+  const usUnits = [
+    { value: "tsp", label: "tsp" },
+    { value: "tbsp", label: "tbsp" },
+    { value: "cup", label: "cup" },
+    { value: "fl oz", label: "fl oz" },
+    { value: "pint", label: "pint" },
+    { value: "quart", label: "quart" },
+    { value: "gallon", label: "gallon" },
+    { value: "oz", label: "oz" },
+    { value: "lb", label: "lb" },
+  ];
+  const availableUnits = [
+    ...metricUnits,
+    ...usUnits,
+    ...universalUnits,
+  ];
+
+  // Compute if there are changes while editing to disable Update button when unchanged
+  const isEditing = !!editingItem;
+  const noChanges = useMemo(() => {
+    if (!editingItem) return false;
+    const baselinePurchaseDate = format(new Date(editingItem.purchaseDate), "yyyy-MM-dd");
+    const baselineShelfLife = Math.max(
+      0,
+      differenceInDays(new Date(editingItem.expiryDate), new Date(editingItem.purchaseDate))
+    );
+    const formShelfLife = parseInt(newItem.shelfLife || "0", 10);
+    const formQuantity = parseFloat(newItem.quantity || "0");
+    return (
+      newItem.name.trim() === editingItem.name &&
+      formQuantity === editingItem.quantity &&
+      newItem.unit.trim() === editingItem.unit &&
+      newItem.purchaseDate === baselinePurchaseDate &&
+      formShelfLife === baselineShelfLife
+    );
+  }, [editingItem, newItem]);
 
   const handleSaveItem = async () => {
     if (
@@ -78,12 +139,13 @@ export default function InventoryDialog({
       if (!user) throw new Error('User not authenticated');
       const userId = user.id;
       
+      const effectiveUnit = newItem.unit === "__custom" ? customUnit.trim() : newItem.unit;
       if (editingItem) {
         // Update existing item via API, including expiry_date
         const updatedItem = await updateInventoryItem(userId, editingItem.id, {
           item_name: newItem.name,
           quantity: parseFloat(newItem.quantity),
-          unit: newItem.unit,
+          unit: effectiveUnit,
           // Send ISO string; backend (Pydantic) will parse to datetime
           expiry_date: expiryEOD.toISOString(),
         });
@@ -109,7 +171,7 @@ export default function InventoryDialog({
         const apiItem = await addInventoryItem(userId, {
           item_name: newItem.name,
           quantity: parseFloat(newItem.quantity),
-          unit: newItem.unit,
+          unit: effectiveUnit,
           purchase_date: newItem.purchaseDate,
           shelf_life_days: newItem.shelfLife ? parseInt(newItem.shelfLife) : undefined
         });
@@ -133,6 +195,7 @@ export default function InventoryDialog({
         purchaseDate: format(new Date(), "yyyy-MM-dd"),
         shelfLife: "",
       });
+      setCustomUnit("");
       setEditingItem(null);
     } catch (error) {
       console.error('Failed to save inventory item:', error);
@@ -153,11 +216,11 @@ export default function InventoryDialog({
   };
 
   const getExpiryBadge = (expiryDate: string) => {
-    const days = differenceInDays(new Date(expiryDate), new Date());
-    if (days < 0) return <Badge variant="destructive">Expired</Badge>;
-    if (days <= 3) return <Badge variant="destructive">Expires in {days}d</Badge>;
-    if (days <= 7) return <Badge variant="secondary" className="bg-accent text-accent-foreground">Expires in {days}d</Badge>;
-    return <Badge variant="outline">Expires in {days}d</Badge>;
+    const { text, severity } = getExpiryInfo(expiryDate);
+    if (severity === "expired") return <Badge variant="destructive">{text}</Badge>;
+    if (severity === "urgent") return <Badge variant="destructive">{text}</Badge>;
+    if (severity === "soon") return <Badge variant="secondary" className="bg-accent text-accent-foreground">{text}</Badge>;
+    return <Badge variant="outline">{text}</Badge>;
   };
 
   return (
@@ -182,7 +245,7 @@ export default function InventoryDialog({
                 placeholder="e.g., Tomatoes"
               />
             </div>
-            <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2">
               <div className="space-y-2">
                 <Label htmlFor="quantity">Quantity</Label>
                 <Input
@@ -197,12 +260,37 @@ export default function InventoryDialog({
               </div>
               <div className="space-y-2">
                 <Label htmlFor="unit">Unit</Label>
-                <Input
-                  id="unit"
-                  value={newItem.unit}
-                  onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })}
-                  placeholder="e.g., pcs"
-                />
+                  <div className="space-y-2">
+                    <Select
+                      value={newItem.unit || ""}
+                      onValueChange={(val) => {
+                        if (val === "__custom") {
+                          setNewItem({ ...newItem, unit: "__custom" });
+                          if (!customUnit) setCustomUnit("");
+                        } else {
+                          setNewItem({ ...newItem, unit: val });
+                        }
+                      }}
+                    >
+                      <SelectTrigger id="unit">
+                        <SelectValue placeholder="Select unit" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableUnits.map((u) => (
+                          <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>
+                        ))}
+                        <SelectItem value="__custom">Custom…</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {newItem.unit === "__custom" && (
+                      <Input
+                        id="customUnit"
+                        placeholder="Enter custom unit"
+                        value={customUnit}
+                        onChange={(e) => setCustomUnit(e.target.value)}
+                      />
+                    )}
+                  </div>
               </div>
             </div>
             <div className="space-y-2">
@@ -229,7 +317,7 @@ export default function InventoryDialog({
               />
             </div>
             <div className="flex gap-2">
-              <Button onClick={handleSaveItem} className="flex-1">
+              <Button onClick={handleSaveItem} className="flex-1" disabled={isEditing && noChanges}>
                 {editingItem ? (
                   <><Edit className="mr-2 h-4 w-4" /> Update Item</>
                 ) : (
@@ -237,7 +325,19 @@ export default function InventoryDialog({
                 )}
               </Button>
               {editingItem && (
-                <Button onClick={() => setEditingItem(null)} variant="outline">
+                <Button
+                  onClick={() => {
+                    setEditingItem(null);
+                    setNewItem({
+                      name: "",
+                      quantity: "",
+                      unit: "",
+                      purchaseDate: format(new Date(), "yyyy-MM-dd"),
+                      shelfLife: "",
+                    });
+                  }}
+                  variant="outline"
+                >
                   Cancel
                 </Button>
               )}
@@ -277,13 +377,16 @@ export default function InventoryDialog({
                                 0,
                                 differenceInDays(expiryDateISO, purchaseDateISO)
                               );
+                              // If item unit isn't in options, switch to custom and seed value
+                              const unitInList = [...availableUnits.map(u => u.value)].includes(item.unit);
                               setNewItem({
                                 name: item.name,
                                 quantity: item.quantity.toString(),
-                                unit: item.unit,
+                                unit: unitInList ? item.unit : "__custom",
                                 purchaseDate: format(purchaseDateISO, "yyyy-MM-dd"),
                                 shelfLife: String(currentShelfLife),
                               });
+                              if (!unitInList) setCustomUnit(item.unit);
                             }}
                           >
                             <Edit className="h-4 w-4" />

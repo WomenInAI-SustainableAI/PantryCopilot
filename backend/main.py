@@ -340,7 +340,7 @@ async def get_user_settings(user_id: str):
     return {
         "userId": user_id,
         "name": "",
-        "email": ""
+        "email": "",
     }
 
 @app.put("/api/users/{user_id}/settings")

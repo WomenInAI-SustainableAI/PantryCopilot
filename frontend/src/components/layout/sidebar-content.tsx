@@ -48,9 +48,11 @@ export default function SidebarContent({
       <MainContent>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton href="/" isActive>
+            <SidebarMenuButton asChild isActive>
+              <Link href="/">
               <Home />
               <span>Dashboard</span>
+              </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
@@ -77,9 +79,11 @@ export default function SidebarContent({
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton href="#">
+            <SidebarMenuButton asChild>
+              <Link href="#">
               <LifeBuoy />
               <span>Support</span>
+              </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Button as UIButton } from "@/components/ui/button";
 import type { UserSettings } from "@/lib/types";
 
 interface UserSettingsDialogProps {
@@ -74,6 +75,7 @@ export default function UserSettingsDialog({
               onChange={(e) => setEmail(e.target.value)}
             />
           </div>
+          {/* Measurement system preference removed as requested */}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>

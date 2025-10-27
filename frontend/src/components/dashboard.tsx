@@ -17,7 +17,8 @@ import RecipeDetails from "@/components/recipes/recipe-details";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import RecipeCard from "@/components/recipes/recipe-card";
-import { differenceInDays, formatDistanceToNow } from "date-fns";
+import { differenceInDays } from "date-fns";
+import { getExpiryInfo } from "@/lib/expiry";
 import { Console } from "console";
 
 export default function Dashboard() {
@@ -358,9 +359,14 @@ export default function Dashboard() {
                               {item.quantity} {item.unit}
                             </p>
                           </div>
-                          <Badge variant="destructive">
-                            Expires in {formatDistanceToNow(new Date(item.expiryDate))}
-                          </Badge>
+                          {(() => {
+                            const { text, severity } = getExpiryInfo(item.expiryDate);
+                            const content = text;
+                            if (severity === "expired") return <Badge variant="destructive">{content}</Badge>;
+                            if (severity === "urgent") return <Badge variant="destructive">{content}</Badge>;
+                            if (severity === "soon") return <Badge variant="secondary" className="bg-accent text-accent-foreground">{content}</Badge>;
+                            return <Badge variant="outline">{content}</Badge>;
+                          })()}
                         </li>
                       ))}
                     </ul>
