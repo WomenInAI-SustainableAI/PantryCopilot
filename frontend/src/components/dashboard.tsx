@@ -11,7 +11,7 @@ import SidebarContent from "@/components/layout/sidebar-content";
 import Header from "@/components/layout/header";
 import type { InventoryFormItem, Recipe, NormalizedRecipe, UserPreferences, UserSettings, Ingredient } from "@/lib/types";
 import { initialUser } from "@/lib/data";
-import { getInventory } from "@/app/actions";
+import { getInventory, deleteInventoryItem } from "@/app/actions";
 import { useAuth } from "@/lib/auth";
 import RecipeDetails from "@/components/recipes/recipe-details";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -20,6 +20,15 @@ import RecipeCard from "@/components/recipes/recipe-card";
 import { differenceInDays } from "date-fns";
 import { getExpiryInfo } from "@/lib/expiry";
 import { Console } from "console";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -35,6 +44,8 @@ export default function Dashboard() {
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const initialLoadCompleteRef = React.useRef(false);
+  const [removedExpired, setRemovedExpired] = useState<InventoryFormItem[]>([]);
+  const [showExpiredDialog, setShowExpiredDialog] = useState(false);
 
   const fetchRecommendations = React.useCallback(async (uid: string) => {
     setLoadingRecommendations(true);
@@ -84,7 +95,42 @@ export default function Dashboard() {
           expiryDate: item.expiry_date,
           shelfLife: 7
         }));
-        setInventory(formInventory);
+
+        // On login/initial load: remove expired items and notify the user
+        const now = new Date();
+        const expiredItems = formInventory.filter(it => {
+          const d = new Date(it.expiryDate);
+          if (isNaN(d.getTime())) return false;
+          return differenceInDays(d, now) < 0; // already expired
+        });
+
+        if (expiredItems.length > 0) {
+          const keep: InventoryFormItem[] = [];
+          const actuallyRemoved: InventoryFormItem[] = [];
+          const expiredSet = new Set(expiredItems.map(i => i.id));
+          // Start with non-expired items
+          for (const it of formInventory) {
+            if (!expiredSet.has(it.id)) keep.push(it);
+          }
+          // Try to delete expired on the server; if deletion fails, keep the item
+          for (const it of expiredItems) {
+            try {
+              await deleteInventoryItem(user.id, it.id);
+              actuallyRemoved.push(it);
+            } catch (e) {
+              // Keep it if deletion failed
+              keep.push(it);
+              console.error("Failed to delete expired item:", it.name, e);
+            }
+          }
+          setInventory(keep);
+          if (actuallyRemoved.length > 0) {
+            setRemovedExpired(actuallyRemoved);
+            setShowExpiredDialog(true);
+          }
+        } else {
+          setInventory(formInventory);
+        }
         // Load recommendations from API (limit to 3)
         await fetchRecommendations(user.id);
       } catch (error) {
@@ -436,6 +482,30 @@ export default function Dashboard() {
             onCookRecipe={handleCookRecipe}
           />
         )}
+
+        {/* Expired items removed dialog */}
+        <AlertDialog open={showExpiredDialog} onOpenChange={setShowExpiredDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Expired items removed</AlertDialogTitle>
+            </AlertDialogHeader>
+            <div className="text-sm text-muted-foreground">
+              <p className="mb-2">We noticed some items had expired and removed them from your inventory:</p>
+              <ul className="list-disc pl-5 space-y-1 text-foreground">
+                {removedExpired.map((it) => (
+                  <li key={it.id}>
+                    {it.name} — {it.quantity} {it.unit} (expired on {new Date(it.expiryDate).toLocaleDateString()})
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogAction onClick={() => setShowExpiredDialog(false)}>
+                OK
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SidebarInset>
     </SidebarProvider>
   );
