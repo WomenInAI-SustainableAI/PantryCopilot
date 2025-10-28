@@ -237,9 +237,9 @@ export default function RecipeDetails({
       (item?.name || '').toLowerCase(),
       item
     ]));
-
+    // Backend is authoritative for category expansion. Frontend performs a basic exact check only.
     const allergySet = new Set((userPreferences?.allergies || []).map(a => (a || '').toLowerCase()));
-    const hasAllergens = (normalized.ingredients || []).some((ing) => allergySet.has((ing?.name || '').toLowerCase()));
+    const hasAllergens = (normalized.ingredients || []).some((ing) => allergySet.has(String(ing?.name || '').toLowerCase()));
 
     const missing: Ingredient[] = [];
     const partial: { name: string; remaining: number; unit: string }[] = [];

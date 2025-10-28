@@ -87,6 +87,52 @@ async def get_personalized_recommendations(
     ingredient_names = [item.item_name for item in inventory]
     expiring_names = [item.item_name for item in expiring_items]
     allergen_names = [allergy.allergen for allergy in allergies]
+
+    # Expand category-style allergens like "dairy" into concrete ingredient terms
+    def _expand_allergy_terms(terms: List[str]) -> List[str]:
+        mapping = {
+            'dairy': [
+                'milk','cheese','butter','yogurt','cream','whey','casein','caseinate','ghee','curd','paneer','kefir','ricotta','mozzarella','parmesan','cheddar','buttermilk','custard','lactose'
+            ],
+            'nuts': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'tree nut': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'treenut': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'peanut': ['peanut','peanuts','peanut butter','groundnut'],
+            'shellfish': ['shrimp','prawn','crab','lobster','crayfish','krill','shellfish'],
+            'fish': ['fish','salmon','tuna','cod','haddock','tilapia','trout','anchovy','sardine','mackerel','bass'],
+            'gluten': ['gluten','wheat','barley','rye','malt','semolina','farina','spelt','einkorn','emmer'],
+            'wheat': ['wheat','semolina','spelt','einkorn','emmer','farina'],
+            'soy': ['soy','soya','soybean','soybeans','soymilk','soy sauce','edamame','tofu','miso','tempeh'],
+            'sesame': ['sesame','tahini','sesame oil','sesame seeds'],
+            'mustard': ['mustard','mustard seeds','mustard powder'],
+            'celery': ['celery','celeriac'],
+            'lupin': ['lupin','lupine','lupine flour'],
+            'sulfite': ['sulfite','sulfites','sulphite','sulphites','sulfur dioxide','e220','e221','e222','e223','e224','e225','e226','e227','e228'],
+            'egg': ['egg','eggs','albumen'],
+        }
+        out: List[str] = []
+        for t in terms:
+            k = (t or '').strip().lower()
+            if not k:
+                continue
+            out.append(k)
+            if k in mapping:
+                out.extend(mapping[k])
+        # de-duplicate while preserving order
+        seen = set()
+        dedup: List[str] = []
+        for x in out:
+            if x not in seen:
+                seen.add(x)
+                dedup.append(x)
+        return dedup
+    allergen_names_expanded = _expand_allergy_terms(allergen_names)
     
     # 6. Search recipes using Spoonacular with CMAB-selected categories
     recipes = []
@@ -99,8 +145,8 @@ async def get_personalized_recommendations(
                 query=category if category != "general" else "",
                 cuisine=category if category in ["italian", "asian", "mexican", "american", "mediterranean", "indian"] else None,
                 type=category if category in ["breakfast", "dessert", "soup", "salad"] else None,
-                exclude_ingredients=allergen_names,
-                intolerances=allergen_names,
+                exclude_ingredients=allergen_names_expanded,
+                intolerances=allergen_names_expanded,
                 number=number_of_recipes
             )
             
@@ -308,13 +354,57 @@ async def get_recommendations_by_preferences(
     
     # Get allergen names for exclusion
     allergen_names = [allergy.allergen for allergy in allergies]
+
+    def _expand_allergy_terms(terms: List[str]) -> List[str]:
+        mapping = {
+            'dairy': [
+                'milk','cheese','butter','yogurt','cream','whey','casein','caseinate','ghee','curd','paneer','kefir','ricotta','mozzarella','parmesan','cheddar','buttermilk','custard','lactose'
+            ],
+            'nuts': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'tree nut': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'treenut': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'peanut': ['peanut','peanuts','peanut butter','groundnut'],
+            'shellfish': ['shrimp','prawn','crab','lobster','crayfish','krill','shellfish'],
+            'fish': ['fish','salmon','tuna','cod','haddock','tilapia','trout','anchovy','sardine','mackerel','bass'],
+            'gluten': ['gluten','wheat','barley','rye','malt','semolina','farina','spelt','einkorn','emmer'],
+            'wheat': ['wheat','semolina','spelt','einkorn','emmer','farina'],
+            'soy': ['soy','soya','soybean','soybeans','soymilk','soy sauce','edamame','tofu','miso','tempeh'],
+            'sesame': ['sesame','tahini','sesame oil','sesame seeds'],
+            'mustard': ['mustard','mustard seeds','mustard powder'],
+            'celery': ['celery','celeriac'],
+            'lupin': ['lupin','lupine','lupine flour'],
+            'sulfite': ['sulfite','sulfites','sulphite','sulphites','sulfur dioxide','e220','e221','e222','e223','e224','e225','e226','e227','e228'],
+            'egg': ['egg','eggs','albumen'],
+        }
+        out: List[str] = []
+        for t in terms:
+            k = (t or '').strip().lower()
+            if not k:
+                continue
+            out.append(k)
+            if k in mapping:
+                out.extend(mapping[k])
+        seen = set()
+        dedup: List[str] = []
+        for x in out:
+            if x not in seen:
+                seen.add(x)
+                dedup.append(x)
+        return dedup
+    allergen_names_expanded = _expand_allergy_terms(allergen_names)
     
     # Search with preferences
     search_results = await search_recipes_complex(
         cuisine=cuisine,
         diet=diet,
-        exclude_ingredients=allergen_names,
-        intolerances=allergen_names,
+        exclude_ingredients=allergen_names_expanded,
+        intolerances=allergen_names_expanded,
         number=number_of_recipes * 2
     )
     

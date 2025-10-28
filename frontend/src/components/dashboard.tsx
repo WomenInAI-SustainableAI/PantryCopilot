@@ -379,8 +379,15 @@ export default function Dashboard() {
     });
 
     const filteredRecipes = updatedRecipes.filter((recipe) => {
-        const hasAllergens = (recipe.ingredients || []).some(ingredient => ingredient?.name && userPreferences.allergies.includes(ingredient.name.toLowerCase()));
-        const hasDislikes = (recipe.ingredients || []).some(ingredient => ingredient?.name && userPreferences.dislikes.includes(ingredient.name.toLowerCase()));
+        // Backend enforces allergy filtering. Frontend keeps a minimal exact check only.
+        const hasAllergens = (recipe.ingredients || []).some(ingredient => {
+          const n = String((ingredient as any)?.name || '').toLowerCase();
+          return !!n && (userPreferences.allergies || []).includes(n);
+        });
+        const hasDislikes = (recipe.ingredients || []).some(ingredient => {
+          const n = String((ingredient as any)?.name || '').toLowerCase();
+          return !!n && (userPreferences.dislikes || []).includes(n);
+        });
         return !hasAllergens && !hasDislikes;
     });
 
