@@ -32,7 +32,8 @@ import type { InventoryItem, InventoryFormItem } from "@/lib/types";
 import { addDays, differenceInDays, differenceInHours, format } from "date-fns";
 import { getExpiryInfo } from "@/lib/expiry";
 import { Badge } from "../ui/badge";
-import { PlusCircle, Trash2, Edit } from "lucide-react";
+import { PlusCircle, Trash2, Edit, Info } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { addInventoryItem, deleteInventoryItem, updateInventoryItem } from "@/app/actions";
 import { useAuth } from "@/lib/auth";
 
@@ -305,7 +306,37 @@ export default function InventoryDialog({
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="shelfLife">Shelf Life (days) - Optional</Label>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="shelfLife">Shelf Life (days) - Optional</Label>
+                <TooltipProvider delayDuration={0}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Shelf life auto-calculation info"
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <Info className="h-4 w-4" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs">
+                      <p>
+                        Leave blank to auto-calculate using
+                        {" "}
+                        <a
+                          href="https://catalog.data.gov/dataset/fsis-foodkeeper-data"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="underline"
+                        >
+                          FSIS/USDA FoodKeeper
+                        </a>
+                        {" "}guidance based on the item name.
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
               <Input
                 id="shelfLife"
                 type="number"
