@@ -54,12 +54,15 @@ export function normalizeRecipe(raw: any): NormalizedRecipe {
   // Ingredients: prefer extendedIngredients -> map to {name, quantity, unit}
   let ingredients: Array<{ name: string; quantity: number; unit: string }> = [];
   if (Array.isArray(raw?.extendedIngredients) && raw.extendedIngredients.length) {
-    ingredients = raw.extendedIngredients.map((ing: any) => ({
-      name: ing?.name || ing?.original || "",
-      quantity: typeof ing?.amount === "number" ? ing.amount : 0,
-      // prefer provided unit, else pick metric or us short units
-      unit: ing?.unit || ing?.measures?.metric?.unitShort || ing?.measures?.us?.unitShort || "",
-    }));
+    ingredients = raw.extendedIngredients.map((ing: any) => {
+      const metricAmt = typeof ing?.measures?.metric?.amount === 'number' ? ing.measures.metric.amount : (typeof ing?.amount === 'number' ? ing.amount : 0);
+      const metricUnit = ing?.measures?.metric?.unitShort || ing?.unit || ing?.measures?.us?.unitShort || '';
+      return {
+        name: ing?.name || ing?.original || "",
+        quantity: metricAmt,
+        unit: metricUnit,
+      };
+    });
   } else if (Array.isArray(raw?.ingredients) && raw.ingredients.length) {
     ingredients = raw.ingredients.map((i: any) =>
       typeof i === "string" ? { name: i, quantity: 0, unit: "" } : { name: i?.name || "", quantity: i?.quantity ?? 0, unit: i?.unit || "" }
@@ -76,6 +79,7 @@ export function normalizeRecipe(raw: any): NormalizedRecipe {
     instructions,
     imageId: raw?.imageId || '',
     image: raw?.image || raw?.imageUrl,
+    servings: typeof raw?.servings === 'number' ? raw.servings : undefined,
     matchPercentage: matchPercentage,
   } as NormalizedRecipe;
 }

@@ -3,7 +3,7 @@ Inventory Service - Business logic for inventory management
 Auto-calculates expiry dates based on quantity
 """
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from src.db.crud import (
     create_inventory_item,
     get_user_inventory,
@@ -158,15 +158,37 @@ def subtract_inventory_items(
     """
     results = {}
     inventory = get_user_inventory(user_id)
-    
+
+    def _norm(s: str) -> str:
+        return (s or "").strip().lower()
+
+    def _tokenize(s: str) -> List[str]:
+        import re
+        s = re.sub(r"[\"'`,.:;()\[\]{}]", " ", s)
+        s = re.sub(r"\s+", " ", s)
+        return [t for t in s.strip().lower().split(" ") if t]
+
+    def _match_inventory(ing_name: str) -> Optional[InventoryItem]:
+        ing_norm = _norm(ing_name)
+        ing_tokens = _tokenize(ing_name)
+        # 1) Exact normalized match
+        for it in inventory:
+            if _norm(it.item_name) == ing_norm:
+                return it
+        # 2) Multi-word subset match (avoid matching single words like 'butter' to 'peanut butter')
+        if len(ing_tokens) >= 2:
+            ing_set = set(ing_tokens)
+            for it in inventory:
+                inv_tokens = set(_tokenize(it.item_name))
+                if ing_set.issubset(inv_tokens):
+                    return it
+        # 3) No match
+        return None
+
     for ingredient_name, quantity_used in recipe_ingredients.items():
-        # Find matching inventory item
-        matching_item = None
-        for item in inventory:
-            if ingredient_name.lower() in item.item_name.lower() or \
-               item.item_name.lower() in ingredient_name.lower():
-                matching_item = item
-                break
+        # Find matching inventory item using stricter rules to avoid false positives like
+        # 'butter' matching 'peanut butter'
+        matching_item = _match_inventory(ingredient_name)
         
         if matching_item:
             new_quantity = matching_item.quantity - quantity_used

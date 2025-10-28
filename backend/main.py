@@ -411,7 +411,8 @@ async def get_filtered_recommendations(
 class CookedRecipeRequest(BaseModel):
     """Request model for marking a recipe as cooked."""
     recipe_id: str = Field(..., description="Spoonacular recipe ID")
-    servings_made: int = Field(1, description="Number of servings made")
+    # Allow fractional servings (e.g., 1.5, 2.25)
+    servings_made: float = Field(1.0, gt=0, description="Number of servings made (can be fractional)")
 
 
 @app.post("/api/users/{user_id}/recipes/cooked")

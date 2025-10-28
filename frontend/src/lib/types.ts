@@ -44,6 +44,7 @@ export interface Recipe {
   instructions: string[];
   imageId: string;
   image?: string; // Spoonacular image URL
+  servings?: number;
   matchPercentage?: number;
   expiringIngredientsCount?: number;
   score?: number;

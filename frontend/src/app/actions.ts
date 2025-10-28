@@ -53,6 +53,25 @@ export async function submitFeedback(input: ImproveRecommendationsFromFeedbackIn
     }
 }
 
+// Fetch the user's latest feedback for a specific recipe (if any)
+export async function getUserFeedbackForRecipe(
+    userId: string,
+    recipeId: string
+): Promise<"upvote" | "downvote" | "skip" | null> {
+    try {
+        const res = await fetch(`${API_BASE}/api/users/${userId}/feedback`);
+        if (!res.ok) return null;
+        const items = await res.json();
+        // items are ordered desc by created_at on the backend; pick the first matching recipe
+        const match = (items || []).find((f: any) => f?.recipe_id === recipeId);
+        const t = match?.feedback_type;
+        return t === "upvote" || t === "downvote" || t === "skip" ? t : null;
+    } catch (e) {
+        console.error("Error fetching user feedback:", e);
+        return null;
+    }
+}
+
 // Inventory API functions
 export async function addInventoryItem(userId: string, item: AddInventoryRequest): Promise<InventoryItem> {
     const response = await fetch(`${API_BASE}/api/users/${userId}/inventory`, {
@@ -118,4 +137,37 @@ export async function updateUserSettings(userId: string, settings: Partial<UserS
     })
     if (!response.ok) throw new Error('Failed to update user settings')
     return response.json()
+}
+
+// Cooked Recipe API function
+export interface CookedRecipeResponse {
+    recipe_id: string
+    servings_made: number
+    recipe_servings: number
+    inventory_updates: Record<string, string>
+    cmab_updated: boolean
+    message: string
+}
+
+export async function cookRecipe(userId: string, recipeId: string, servingsMade: number = 1): Promise<{ success: boolean; data?: CookedRecipeResponse; message?: string }>{
+    try {
+        const res = await fetch(`${API_BASE}/api/users/${userId}/recipes/cooked`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ recipe_id: recipeId, servings_made: servingsMade })
+        });
+        if (!res.ok) {
+            let message = res.statusText || 'Failed to mark recipe as cooked.';
+            try {
+                const err = await res.json();
+                message = (err && (err.detail || err.message)) || message;
+            } catch {}
+            return { success: false, message };
+        }
+        const data = await res.json() as CookedRecipeResponse;
+        return { success: true, data };
+    } catch (e) {
+        console.error('Error calling cooked endpoint:', e);
+        return { success: false, message: 'Network error calling cooked endpoint.' };
+    }
 }

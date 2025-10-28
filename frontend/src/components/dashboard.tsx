@@ -47,11 +47,17 @@ export default function Dashboard() {
         const normalized = (data.recommendations || []).map((r: any) => normalizeRecipe(r));
         setRecipes(normalized as any);
       } else {
-        setRecipes([]);
+        // Fallback: use provided mock recommendations when API data is unavailable
+        const { normalizeRecipe } = await import("@/lib/normalize-recipe");
+        const normalized = getMockRecommendationsRaw().map((r: any) => normalizeRecipe(r));
+        setRecipes(normalized as any);
       }
     } catch (error) {
       console.error('Failed to load recommendations:', error);
-      setRecipes([]);
+      // Fallback: use provided mock recommendations when API is unreachable
+      const { normalizeRecipe } = await import("@/lib/normalize-recipe");
+      const normalized = getMockRecommendationsRaw().map((r: any) => normalizeRecipe(r));
+      setRecipes(normalized as any);
     } finally {
       setLoadingRecommendations(false);
     }
@@ -93,20 +99,60 @@ export default function Dashboard() {
     loadData();
   }, [user, fetchRecommendations]);
 
-  const handleCookRecipe = (recipe: NormalizedRecipe) => {
-    const updatedInventory = inventory.map(invItem => {
-      const recipeIngredient = recipe.ingredients.find(
-        ing => ing.name.toLowerCase() === invItem.name.toLowerCase()
-      );
-      if (recipeIngredient) {
-        return {
-          ...invItem,
-          quantity: Math.max(0, invItem.quantity - recipeIngredient.quantity),
-        };
+  const handleCookRecipe = (recipe: NormalizedRecipe, servingsCooked?: number) => {
+    // Normalize names helper (align with recommendation matching and summary logic)
+    const norm = (s: string) => String(s || "").toLowerCase().replace(/["']/g, "").trim()
+      .replace(/\(.*?\)|\[.*?\]|\{.*?\}/g, " ") // drop bracketed descriptors
+      .replace(/[^a-z0-9\s]/g, " ") // punctuation
+      .replace(/\b(the|a|an)\b/g, " ") // common stopwords
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/s\b/g, ""); // naive singularization
+
+    const tokens = (s: string) => new Set(norm(s).split(" ").filter(Boolean));
+
+    // Compute scaling factor from original servings to cooked servings
+    const baseServings = Math.max(1, Number((recipe as any)?.servings) || 1);
+    const cookedServings = Math.max(1, Number(servingsCooked) || 1);
+    const factor = cookedServings / baseServings;
+
+    // Build a mutable map of inventory by id for cumulative updates
+    const invById = new Map<string, InventoryFormItem>(inventory.map(item => [item.id, { ...item }]));
+
+    // Helper to find matching inventory item using strict rules:
+    // 1) exact normalized match
+    // 2) if ingredient has 2+ tokens, require its tokens be a subset of inventory tokens
+    const findInventoryFor = (ingredientName: string): InventoryFormItem | undefined => {
+      const nameKey = norm(ingredientName);
+      // exact match first
+      for (const item of invById.values()) {
+        if (norm(item.name) === nameKey) return item;
       }
-      return invItem;
-    }).filter(item => item.quantity > 0);
-  
+      // multi-word subset from ingredient -> inventory only
+      const ingTokensArr = Array.from(tokens(ingredientName));
+      if (ingTokensArr.length >= 2) {
+        const ingSet = new Set(ingTokensArr);
+        for (const item of invById.values()) {
+          const invSet = tokens(item.name);
+          let subset = true;
+          for (const t of ingSet) { if (!invSet.has(t)) { subset = false; break; } }
+          if (subset) return item;
+        }
+      }
+      return undefined;
+    };
+
+    // Apply reductions per recipe ingredient
+    for (const ing of (recipe.ingredients || [])) {
+      const invItem = findInventoryFor(ing.name);
+      if (!invItem) continue;
+      const used = Math.max(0, (ing.quantity || 0) * factor);
+      // clamp at zero, only reduce what's available
+      const newQty = Math.max(0, invItem.quantity - used);
+      invById.set(invItem.id, { ...invItem, quantity: newQty });
+    }
+
+    const updatedInventory = Array.from(invById.values()).filter(item => item.quantity > 0);
     setInventory(updatedInventory);
     setSelectedRecipe(null);
   };
@@ -393,4 +439,78 @@ export default function Dashboard() {
       </SidebarInset>
     </SidebarProvider>
   );
+}
+
+// Local mock data used when API data is not available
+function getMockRecommendationsRaw(): any[] {
+  return [
+    {
+      id: 665734,
+      image: "https://img.spoonacular.com/recipes/665734-556x370.jpg",
+      title: "Zucchini Chicken Omelette",
+      readyInMinutes: 45,
+      servings: 2,
+      summary: "Zucchini Chicken Omelette is a main course that serves 2. For <b>72 cents per serving</b>...",
+      dishTypes: ["lunch","main course","morning meal","brunch","main dish","breakfast","dinner"],
+      extendedIngredients: [
+        { name: "eggs", amount: 3.0, unit: "", measures: { metric: { amount: 3.0, unitShort: "" }, us: { amount: 3.0, unitShort: "" } } },
+        { name: "water", amount: 1.0, unit: "tablespoon", measures: { metric: { amount: 1.0, unitShort: "Tbsp" }, us: { amount: 1.0, unitShort: "Tbsp" } } },
+        { name: "zucchini", amount: 150.0, unit: "grams", measures: { metric: { amount: 150.0, unitShort: "g" }, us: { amount: 5.291, unitShort: "oz" } } },
+        { name: "salt and pepper", amount: 2.0, unit: "servings", measures: { metric: { amount: 2.0, unitShort: "servings" }, us: { amount: 2.0, unitShort: "servings" } } },
+        { name: "oil", amount: 1.0, unit: "tablespoon", measures: { metric: { amount: 1.0, unitShort: "Tbsp" }, us: { amount: 1.0, unitShort: "Tbsp" } } },
+        { name: "milanese chicken left over", amount: 80.0, unit: "grams", measures: { metric: { amount: 80.0, unitShort: "g" }, us: { amount: 1.355, unitShort: "oz" } } }
+      ],
+      analyzedInstructions: [{ steps: [
+        { number: 1, step: "Beat eggs and water in a bowl." },
+        { number: 2, step: "Mix in grated zucchini and season with salt and pepper." },
+        { number: 3, step: "Heat oil, add half the egg mixture and diced chicken." },
+        { number: 4, step: "Cook until set and fold; repeat." },
+        { number: 5, step: "Serve with salad." }
+      ]}],
+      scoring: { overall_score: 21.6667, match_percentage: 16.6667 }
+    },
+    {
+      id: 649495,
+      image: "https://img.spoonacular.com/recipes/649495-556x370.jpg",
+      title: "Lemon and Garlic Slow Roasted Chicken",
+      readyInMinutes: 45,
+      servings: 6,
+      summary: "Lemon and Garlic Slow Roasted Chicken might be a good recipe to expand your main course recipe box...",
+      dishTypes: ["lunch","main course","main dish","dinner"],
+      extendedIngredients: [
+        { name: "chicken weighing 2.3kg", amount: 1.0, unit: "large", measures: { metric: { amount: 0.48, unitShort: "large" }, us: { amount: 0.48, unitShort: "large" } } },
+        { name: "bulbs garlic", amount: 2.0, unit: "", measures: { metric: { amount: 2.0, unitShort: "" }, us: { amount: 2.0, unitShort: "" } } },
+        { name: "lemons", amount: 2.0, unit: "large", measures: { metric: { amount: 2.0, unitShort: "large" }, us: { amount: 2.0, unitShort: "large" } } },
+        { name: "olive oil", amount: 1.0, unit: "tablespoon", measures: { metric: { amount: 1.0, unitShort: "Tbsp" }, us: { amount: 1.0, unitShort: "Tbsp" } } },
+        { name: "salt and pepper", amount: 1.0, unit: "", measures: { metric: { amount: 1.0, unitShort: "" }, us: { amount: 1.0, unitShort: "" } } },
+        { name: "sunflower oil", amount: 2.0, unit: "tablespoons", measures: { metric: { amount: 2.0, unitShort: "Tbsps" }, us: { amount: 2.0, unitShort: "Tbsps" } } }
+      ],
+      analyzedInstructions: [{ steps: [
+        { number: 1, step: "Trim chicken, season, prepare garlic." },
+        { number: 2, step: "Roast and then slow-cook until tender." },
+        { number: 3, step: "Stir-fry vegetables and serve with chicken." }
+      ]}],
+      scoring: { overall_score: 21.6667, match_percentage: 16.6667 }
+    },
+    {
+      id: 632075,
+      image: "https://img.spoonacular.com/recipes/632075-556x370.jpg",
+      title: "All Day Simple Slow-Cooker FALL OFF the BONE Ribs",
+      readyInMinutes: 45,
+      servings: 4,
+      summary: "All Day Simple Slow-Cooker FALL OFF the BONE Ribs takes around <b>45 minutes</b>...",
+      dishTypes: ["antipasti","starter","snack","appetizer","antipasto","hor d'oeuvre"],
+      extendedIngredients: [
+        { name: "slabs of pork ribs", amount: 2.0, unit: "", measures: { metric: { amount: 2.0, unitShort: "" }, us: { amount: 2.0, unitShort: "" } } },
+        { name: "broth", amount: 0.25, unit: "Cup", measures: { metric: { amount: 0.12, unitShort: "cups" }, us: { amount: 0.25, unitShort: "cups" } } },
+        { name: "bbq sauce", amount: 40.0, unit: "oz", measures: { metric: { amount: 1.134, unitShort: "kgs" }, us: { amount: 40.0, unitShort: "oz" } } },
+        { name: "salt", amount: 4.0, unit: "servings", measures: { metric: { amount: 4.0, unitShort: "servings" }, us: { amount: 4.0, unitShort: "servings" } } }
+      ],
+      analyzedInstructions: [{ steps: [
+        { number: 1, step: "Season and layer ribs in slow cooker with BBQ sauce and broth." },
+        { number: 2, step: "Cook low 8-10 hrs; broil with more sauce to finish." }
+      ]}],
+      scoring: { overall_score: 7.5, match_percentage: 0.0 }
+    }
+  ];
 }

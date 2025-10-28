@@ -13,11 +13,23 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ThumbsUp, ThumbsDown, Sparkles, ChefHat, Clock, ShieldCheck, Leaf, CookingPot } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import type { Recipe, NormalizedRecipe, UserPreferences, InventoryFormItem, Ingredient } from "@/lib/types";
 import { PlaceHolderImages } from "@/lib/placeholder-images";
-import { submitFeedback } from "@/app/actions";
+import { submitFeedback, getUserFeedbackForRecipe } from "@/app/actions";
 import { normalizeRecipe } from "@/lib/normalize-recipe";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { cookRecipe } from "@/app/actions";
 // Lightweight client-side sanitizer for a limited set of tags/attrs.
 // We avoid adding a runtime dependency here; this sanitizer keeps basic formatting and links.
 function sanitizeHtml(dirty: string): string {
@@ -92,7 +104,7 @@ interface RecipeDetailsProps {
   inventory: InventoryFormItem[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCookRecipe: (recipe: NormalizedRecipe) => void;
+  onCookRecipe: (recipe: NormalizedRecipe, servingsCooked?: number) => void;
 }
 
 interface ExplanationInfo {
@@ -118,10 +130,71 @@ export default function RecipeDetails({
   const { toast } = useToast();
   const [feedbackSubmitted, setFeedbackSubmitted] = useState<"upvote" | "downvote" | null>(null);
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+  const [isCooking, setIsCooking] = useState(false);
+  const [showCookedDialog, setShowCookedDialog] = useState(false);
+  const [originalServings, setOriginalServings] = useState<number>(1);
+  const [selectedServings, setSelectedServings] = useState<number>(1);
+  const [servingsInput, setServingsInput] = useState<string>("1");
+  type CookedItem =
+    | { type: 'quantity'; name: string; oldQty: number; newQty: number; unit: string }
+    | { type: 'status'; name: string; status: string };
+  const [cookedSummary, setCookedSummary] = useState<{
+    items: CookedItem[];
+    note?: string;
+  } | null>(null);
 
   const normalized = useMemo(() => normalizeRecipe(recipe), [recipe]);
 
   const sanitizedDescription = useMemo(() => sanitizeHtml(normalized.description || ''), [normalized.description]);
+
+  // Safely convert unknown values (objects/arrays/errors) into strings for rendering
+  const toText = (val: any): string => {
+    if (val == null) return '';
+    if (typeof val === 'string') return val;
+    if (Array.isArray(val)) return val.map(toText).filter(Boolean).join('; ');
+    if (typeof val === 'object') {
+      try {
+        // Prefer common error shapes
+        if ('msg' in val && typeof (val as any).msg === 'string') return (val as any).msg;
+        if ('detail' in val) return toText((val as any).detail);
+        return JSON.stringify(val);
+      } catch {
+        return String(val);
+      }
+    }
+    return String(val);
+  };
+
+  // Initialize servings based on recipe information
+  useEffect(() => {
+    const base = Number((normalized as any)?.servings) || Number((recipe as any)?.servings) || 1;
+    setOriginalServings(base);
+    setSelectedServings(base);
+    setServingsInput(String(base));
+  }, [normalized?.id]);
+
+  // Load any previously submitted feedback for this user+recipe to prevent duplicate submissions
+  useEffect(() => {
+    let cancelled = false;
+    async function loadExisting() {
+      if (!open) return; // only when sheet is open
+      const uid = userPreferences?.userId;
+      const rid = normalized?.id;
+      if (!uid || !rid) return;
+      const existing = await getUserFeedbackForRecipe(uid, rid);
+      if (!cancelled) {
+        if (existing === "upvote" || existing === "downvote") {
+          setFeedbackSubmitted(existing);
+        } else {
+          setFeedbackSubmitted(null);
+        }
+      }
+    }
+    loadExisting();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, userPreferences?.userId, normalized?.id]);
 
   // Derive image URL similar to RecipeCard: prefer normalized.image (spoonacular URL),
   // otherwise try a constructed spoonacular URL by id, then fallback to placeholder set.
@@ -147,6 +220,16 @@ export default function RecipeDetails({
       (ing: Ingredient) => (inventoryMap.get(ing.name.toLowerCase()) || 0) < (ing.quantity || 0)
     );
   }, [inventory, normalized.ingredients]);
+
+  // Scaled ingredients based on selected servings
+  const scaledIngredients = useMemo(() => {
+    const base = originalServings || 1;
+    const factor = (selectedServings || 1) / base;
+    return (normalized.ingredients || []).map((ing: Ingredient) => ({
+      ...ing,
+      quantity: Math.round(((ing.quantity || 0) * factor + Number.EPSILON) * 100) / 100,
+    }));
+  }, [normalized.ingredients, originalServings, selectedServings]);
 
   // Client-side explanation info (inspired by v2)
   const explanationInfo = useMemo<ExplanationInfo>(() => {
@@ -203,46 +286,120 @@ export default function RecipeDetails({
   }, [inventory, normalized.ingredients, expiringIngredients, userPreferences?.allergies]);
 
   const handleFeedback = async (feedbackType: "upvote" | "downvote") => {
-    // If the same button is clicked again, do nothing (no-op)
-    if (feedbackSubmitted === feedbackType) return;
     if (isSubmittingFeedback) return;
     setIsSubmittingFeedback(true);
-    // Optimistically set selection so UI reflects intent immediately
-    setFeedbackSubmitted(feedbackType);
+
+    // If pressing the same button again, treat it as a reset (neutral) using "skip"
+    const sendingType = feedbackSubmitted === feedbackType ? ("skip" as any) : (feedbackType as any);
+    // Optimistically update UI
+    setFeedbackSubmitted(sendingType === "skip" ? null : feedbackType);
 
     const result = await submitFeedback({
       recipeId: normalized.id,
-      // submitFeedback expects a FeedbackType; cast here to satisfy the API surface
-      feedbackType: feedbackType as any,
+      feedbackType: sendingType,
       userId: userPreferences.userId,
       recipeTitle: normalized.title,
-      // Try to include categories when available from raw recipe payload
       recipeCategories: [
         ...((recipe as any)?.dishTypes || []),
         ...((recipe as any)?.cuisines || []),
       ].filter(Boolean),
     });
-    
+
     toast({
-      title: result.success ? "Feedback Submitted" : "Error",
-      description: result.message,
+      title: result.success ? (sendingType === "skip" ? "Feedback Cleared" : "Feedback Submitted") : "Error",
+      description: toText(result.message),
       variant: result.success ? "default" : "destructive",
     });
     if (!result.success) {
-      // allow retry if there was an error
-      setFeedbackSubmitted(null);
+      // Revert optimistic update
+      setFeedbackSubmitted(feedbackSubmitted);
     }
     setIsSubmittingFeedback(false);
   };
 
-  const handleCookClick = () => {
-  // Pass a normalized recipe shape to the parent so inventory updates work
-  // (parent expects recipe.ingredients to be objects with .name and .quantity)
-  onCookRecipe(normalized);
-    toast({
-      title: "Bon Appétit!",
-      description: `Your inventory has been updated after cooking ${normalized.title}.`,
+  const handleCookClick = async () => {
+    if (isCooking) return;
+    setIsCooking(true);
+
+    // Call backend cooked endpoint first to ensure server-side inventory updates
+    const userId = userPreferences?.userId;
+    if (!userId) {
+      toast({ title: "Error", description: "Missing user ID.", variant: "destructive" });
+      setIsCooking(false);
+      return;
+    }
+
+  // Use the selected servings specified by the user
+  const result = await cookRecipe(userId, normalized.id, Math.max(1, Number(selectedServings) || 1));
+    if (!result.success || !result.data) {
+      toast({
+        title: "Couldn’t mark as cooked",
+        description: toText(result.message) || "Please try again.",
+        variant: "destructive",
+      });
+      setIsCooking(false);
+      return;
+    }
+
+    // Build detailed cooked summary items with deltas
+  const norm = (s: string) => (s || '').toLowerCase().replace(/["']/g, '').trim();
+    const findInv = (name: string): InventoryFormItem | undefined => {
+      const exact = (inventory || []).find(i => norm(i.name) === norm(name));
+      if (exact) return exact;
+      // Only allow multi-word subset matches (e.g., 'milk chocolate' ⊆ 'dark milk chocolate bar')
+      const tokens = (s: string) => s.split(/\s+/).filter(Boolean);
+      const ingTokens = tokens(norm(name));
+      if ( ingTokens.length >= 2 ) {
+        const ingSet = new Set(ingTokens);
+        for (const i of (inventory || [])) {
+          const invSet = new Set(tokens(norm(i.name)));
+          let subset = true;
+          for (const t of ingSet) { if (!invSet.has(t)) { subset = false; break; } }
+          if (subset) return i;
+        }
+      }
+      return undefined;
+    };
+    const parseBackendNew = (msg: string): number | null => {
+      const m = /new quantity:\s*([-+]?[0-9]*\.?[0-9]+)/i.exec(msg || '');
+      return m ? parseFloat(m[1]) : null;
+    };
+    const items: CookedItem[] = [];
+    const baseServings = originalServings || 1;
+    const usedFactor = (selectedServings || 1) / baseServings;
+    const updates = (result.data?.inventory_updates || {}) as Record<string, string>;
+    normalized.ingredients.forEach(ing => {
+      const inv = findInv(ing.name);
+      const unit = inv?.unit || ing.unit || '';
+      const backendMsgRaw = updates[ing.name];
+      const backendMsg = toText(backendMsgRaw);
+      if (inv) {
+        let oldQty = inv.quantity;
+        let newQty: number | null = null;
+        if (backendMsg) {
+          if (/deleted/i.test(backendMsg)) {
+            newQty = 0;
+          } else {
+            const parsed = parseBackendNew(backendMsg);
+            if (parsed !== null && !Number.isNaN(parsed)) newQty = parsed;
+          }
+        }
+        if (newQty === null) {
+          const used = (ing.quantity || 0) * usedFactor;
+          newQty = Math.max(0, oldQty - used);
+        }
+        items.push({ type: 'quantity', name: ing.name, oldQty, newQty, unit });
+      } else {
+        const statusRaw = backendMsg || 'not found in inventory';
+        items.push({ type: 'status', name: ing.name, status: statusRaw });
+      }
     });
+
+    setCookedSummary({ items, note: result.data.message });
+
+    // Show dialog with summary; defer parent updates until user acknowledges
+    setShowCookedDialog(true);
+    setIsCooking(false);
   }
 
   return (
@@ -325,9 +482,50 @@ export default function RecipeDetails({
               </div>
               <Separator />
               <div>
-                <h3 className="font-headline text-lg font-semibold mb-3">Ingredients</h3>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-headline text-lg font-semibold">Ingredients</h3>
+                  <div className="flex flex-col items-end gap-1 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground">Servings</span>
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={1}
+                        step={0.1}
+                        className="w-24 h-8"
+                        aria-label="Servings"
+                        value={servingsInput}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setServingsInput(val);
+                          const num = parseFloat(val);
+                          if (!Number.isNaN(num) && num > 0) {
+                            setSelectedServings(num);
+                          }
+                        }}
+                      />
+                    </div>
+                    {selectedServings !== originalServings && (
+                      <div className="text-xs">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground"
+                          onClick={() => {
+                            setSelectedServings(originalServings);
+                            setServingsInput(String(originalServings));
+                          }}
+                          aria-label="Reset servings to original"
+                          title="Reset servings to original"
+                        >
+                          Reset to original
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <ul className="space-y-2 text-sm">
-                  {normalized.ingredients.map((ing: Ingredient, index: number) => (
+                  {scaledIngredients.map((ing: Ingredient, index: number) => (
                     <li key={index} className="flex justify-between">
                       <span>{ing.name}</span>
                       <span className="text-muted-foreground">{ing.quantity} {ing.unit}</span>
@@ -347,10 +545,11 @@ export default function RecipeDetails({
       </div>
       </div>
     <SheetFooter className="absolute bottom-0 left-0 right-0 bg-background/80 backdrop-blur-sm p-4 border-t flex-col sm:flex-col items-start gap-4">
-       <Button className="w-full sm:w-auto" size="lg" onClick={handleCookClick}>
+  <Button className="w-full sm:w-auto" size="lg" onClick={handleCookClick} disabled={isCooking}>
         <ChefHat className="mr-2 h-5 w-5" />
-        Cooked this Recipe
+   {isCooking ? 'Updating…' : 'Cooked this Recipe'}
        </Button>
+      {!showCookedDialog && (
       <div className="flex w-full justify-between items-center">
         <span className="text-sm font-medium text-muted-foreground">Was this recommendation helpful?</span>
         <div className="flex gap-2">
@@ -359,6 +558,8 @@ export default function RecipeDetails({
           size="icon"
           onClick={() => handleFeedback("upvote")}
           disabled={isSubmittingFeedback}
+          title={feedbackSubmitted === "upvote" ? "Click again to clear" : "Upvote"}
+          aria-label="Upvote recommendation"
         >
           <ThumbsUp className="h-4 w-4" />
         </Button>
@@ -367,14 +568,83 @@ export default function RecipeDetails({
           size="icon"
           onClick={() => handleFeedback("downvote")}
           disabled={isSubmittingFeedback}
+          title={feedbackSubmitted === "downvote" ? "Click again to clear" : "Downvote"}
+          aria-label="Downvote recommendation"
         >
           <ThumbsDown className="h-4 w-4" />
         </Button>
         </div>
       </div>
+      )}
       </SheetFooter>
         </ScrollArea>
       </SheetContent>
+      <AlertDialog open={showCookedDialog} onOpenChange={setShowCookedDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Good job! You cooked {normalized.title} 🎉</AlertDialogTitle>
+            <div className="text-sm text-muted-foreground">
+              {cookedSummary?.note && (
+                <p className="mb-2 text-foreground">{toText(cookedSummary.note)}</p>
+              )}
+              <p className="mb-2">Servings cooked: <span className="font-medium text-foreground">{Math.max(1, Number(selectedServings) || 1)}</span></p>
+              <ul className="list-disc pl-5 space-y-1 text-foreground">
+                {cookedSummary?.items.map((it, idx) => {
+                  if (it.type === 'quantity') {
+                    const delta = it.oldQty - it.newQty;
+                    const v = (n: number) => {
+                      const r = Math.round((n + Number.EPSILON) * 100) / 100;
+                      return Number.isInteger(r) ? r.toString() : r.toString();
+                    };
+                    return (
+                      <li key={idx}>
+                        {it.name}: {v(it.oldQty)} {it.unit} <span className="mx-1">→</span> {v(it.newQty)} {it.unit} <span className="text-destructive font-medium">({delta > 0 ? '-' : ''}{v(Math.abs(delta))} {it.unit})</span>
+                      </li>
+                    );
+                  }
+                  return (
+                    <li key={idx}>{it.name}: {it.status}</li>
+                  );
+                })}
+              </ul>
+              <div className="mt-4 flex items-center justify-between">
+                <span className="text-sm font-medium text-muted-foreground">Was this recommendation helpful?</span>
+                <div className="flex gap-2">
+                  <Button
+                    variant={feedbackSubmitted === "upvote" ? "default" : "outline"}
+                    size="icon"
+                    onClick={() => handleFeedback("upvote")}
+                    disabled={isSubmittingFeedback}
+                    title={feedbackSubmitted === "upvote" ? "Click again to clear" : "Upvote"}
+                    aria-label="Upvote recommendation"
+                  >
+                    <ThumbsUp className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant={feedbackSubmitted === "downvote" ? "destructive" : "outline"}
+                    size="icon"
+                    onClick={() => handleFeedback("downvote")}
+                    disabled={isSubmittingFeedback}
+                    title={feedbackSubmitted === "downvote" ? "Click again to clear" : "Downvote"}
+                    aria-label="Downvote recommendation"
+                  >
+                    <ThumbsDown className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => {
+              onCookRecipe(
+                normalized,
+                Math.max(1, Number(selectedServings) || 1)
+              );
+              setShowCookedDialog(false);
+            }}>Nice!</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sheet>
   );
 }
