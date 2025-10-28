@@ -133,6 +133,7 @@ async def get_recipe_ingredients_by_id(recipe_id: int) -> Dict:
 async def search_recipes_complex(
     query: Optional[str] = None,
     cuisine: Optional[str] = None,
+    type: Optional[str] = None,
     exclude_ingredients: Optional[List[str]] = None,
     diet: Optional[str] = None,
     intolerances: Optional[List[str]] = None,
@@ -167,6 +168,9 @@ async def search_recipes_complex(
         params["query"] = query
     if cuisine:
         params["cuisine"] = cuisine
+    if type:
+        # Spoonacular accepts 'type' such as 'dessert', 'breakfast', etc.
+        params["type"] = type
     if exclude_ingredients:
         params["excludeIngredients"] = ",".join(exclude_ingredients)
     if diet:

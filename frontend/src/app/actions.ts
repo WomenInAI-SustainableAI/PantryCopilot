@@ -72,6 +72,92 @@ export async function getUserFeedbackForRecipe(
     }
 }
 
+// Get a list of cooked recipe IDs (most recent first, de-duplicated by recipe_id)
+export async function getCookedRecipeIds(userId: string, limit: number = 6): Promise<string[]> {
+    try {
+        const res = await fetch(`${API_BASE}/api/users/${userId}/cooked?limit=${limit}`);
+        if (!res.ok) return [];
+        const items = await res.json();
+        // items already most recent first; dedupe by recipe_id
+        const seen = new Set<string>();
+        const ids: string[] = [];
+        for (const it of (items || [])) {
+            const rid = String(it?.recipe_id || '');
+            if (rid && !seen.has(rid)) {
+                seen.add(rid);
+                ids.push(rid);
+                if (ids.length >= limit) break;
+            }
+        }
+        return ids;
+    } catch (e) {
+        console.error('Error fetching cooked recipes:', e);
+        return [];
+    }
+}
+
+// Get cooked recipes with optional embedded snapshot. If snapshot is present,
+// return it normalized; otherwise, fetch details by ID as a fallback.
+export async function getCookedRecipes(userId: string, limit: number = 6): Promise<any[]> {
+    try {
+        const res = await fetch(`${API_BASE}/api/users/${userId}/cooked?limit=${limit}`);
+        if (!res.ok) return [];
+        const items = await res.json();
+        const { normalizeRecipe } = await import("@/lib/normalize-recipe");
+
+        // Collect normalized recipes from embedded snapshots first
+        const normalizedFromSnapshots: any[] = [];
+        const missingIds: string[] = [];
+        for (const it of (items || [])) {
+            const snap = it?.recipe;
+            if (snap && snap.id) {
+                try {
+                    normalizedFromSnapshots.push(normalizeRecipe(snap));
+                } catch {
+                    // If normalization fails, fallback to fetch
+                    if (it?.recipe_id) missingIds.push(String(it.recipe_id));
+                }
+            } else if (it?.recipe_id) {
+                missingIds.push(String(it.recipe_id));
+            }
+            if (normalizedFromSnapshots.length >= limit) break;
+        }
+
+        // Fetch details for any missing IDs (deduped)
+        const seen = new Set(normalizedFromSnapshots.map(r => String(r.id)));
+        const toFetch = missingIds.filter(id => !seen.has(id)).slice(0, Math.max(0, limit - normalizedFromSnapshots.length));
+        if (toFetch.length > 0) {
+            const details = await Promise.all(toFetch.map(id => getRecipeDetails(id)));
+            for (const d of (details || [])) {
+                if (d) {
+                    try {
+                        normalizedFromSnapshots.push(normalizeRecipe(d));
+                    } catch {}
+                }
+                if (normalizedFromSnapshots.length >= limit) break;
+            }
+        }
+        return normalizedFromSnapshots.slice(0, limit);
+    } catch (e) {
+        console.error('Error fetching cooked recipes:', e);
+        return [];
+    }
+}
+
+// Fetch recipe details by ID (proxied through our backend)
+export async function getRecipeDetails(recipeId: string | number): Promise<any | null> {
+    try {
+        const id = Number(recipeId);
+        if (!id || Number.isNaN(id)) return null;
+        const res = await fetch(`${API_BASE}/api/recipes/${id}`);
+        if (!res.ok) return null;
+        return await res.json();
+    } catch (e) {
+        console.error('Error fetching recipe details:', e);
+        return null;
+    }
+}
+
 // Inventory API functions
 export async function addInventoryItem(userId: string, item: AddInventoryRequest): Promise<InventoryItem> {
     const response = await fetch(`${API_BASE}/api/users/${userId}/inventory`, {

@@ -11,7 +11,7 @@ import SidebarContent from "@/components/layout/sidebar-content";
 import Header from "@/components/layout/header";
 import type { InventoryFormItem, Recipe, NormalizedRecipe, UserPreferences, UserSettings, Ingredient } from "@/lib/types";
 import { initialUser } from "@/lib/data";
-import { getInventory, deleteInventoryItem } from "@/app/actions";
+import { getInventory, deleteInventoryItem, getCookedRecipes } from "@/app/actions";
 import { useAuth } from "@/lib/auth";
 import RecipeDetails from "@/components/recipes/recipe-details";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -34,6 +34,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const [inventory, setInventory] = useState<InventoryFormItem[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [cookedRecipes, setCookedRecipes] = useState<Recipe[]>([]);
   const [userPreferences, setUserPreferences] =
     useState<UserPreferences>(initialUser);
   const [userSettings, setUserSettings] = useState<UserSettings>({
@@ -71,6 +72,16 @@ export default function Dashboard() {
       setRecipes(normalized as any);
     } finally {
       setLoadingRecommendations(false);
+    }
+  }, []);
+
+  const fetchCooked = React.useCallback(async (uid: string) => {
+    try {
+      const cooked = await getCookedRecipes(uid, 6);
+      setCookedRecipes((cooked || []) as any);
+    } catch (e) {
+      console.error('Failed to load cooked recipes:', e);
+      setCookedRecipes([]);
     }
   }, []);
 
@@ -132,7 +143,10 @@ export default function Dashboard() {
           setInventory(formInventory);
         }
         // Load recommendations from API (limit to 3)
-        await fetchRecommendations(user.id);
+        await Promise.all([
+          fetchRecommendations(user.id),
+          fetchCooked(user.id),
+        ]);
       } catch (error) {
         console.error('Failed to load data:', error);
         setInventory([]);
@@ -143,7 +157,7 @@ export default function Dashboard() {
       }
     };
     loadData();
-  }, [user, fetchRecommendations]);
+  }, [user, fetchRecommendations, fetchCooked]);
 
   const handleCookRecipe = (recipe: NormalizedRecipe, servingsCooked?: number) => {
     // Normalize names helper (align with recommendation matching and summary logic)
@@ -431,6 +445,25 @@ export default function Dashboard() {
                     <p className="text-muted-foreground">
                       No recommendations available. Try adding more items to your inventory.
                     </p>
+                  </div>
+                )}
+              </div>
+
+              <h2 className="font-headline text-2xl font-semibold mt-4">
+                Cooked Before
+              </h2>
+              <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+                {cookedRecipes.length > 0 ? (
+                  cookedRecipes.map((recipe) => (
+                    <RecipeCard
+                      key={`cooked-${recipe.id}`}
+                      recipe={recipe}
+                      onSelectRecipe={setSelectedRecipe}
+                    />
+                  ))
+                ) : (
+                  <div className="col-span-full text-center py-6">
+                    <p className="text-muted-foreground text-sm">No cooked recipes yet.</p>
                   </div>
                 )}
               </div>

@@ -42,6 +42,7 @@ from src.services.recommendation_service import (
 from src.db.crud.cmab import CMABCRUD
 from src.services.cmab_service import RecipeCategory
 from src.services.spoonacular_service import get_recipe_information
+from src.db.firestore import db
 
 # Load environment variables
 load_dotenv()
@@ -430,8 +431,15 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
     6. Returns status of each ingredient update
     """
     
-    # Get recipe info - single API call contains all needed data
-    recipe_info = await get_recipe_information(int(request.recipe_id))
+    # Validate recipe id and fetch info (single API call contains all needed data)
+    try:
+        rid = int(request.recipe_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="recipe_id must be an integer")
+    try:
+        recipe_info = await get_recipe_information(rid)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch recipe information: {e}")
     
     # Extract ingredient quantities from extendedIngredients
     ingredient_quantities = {}
@@ -442,7 +450,7 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
         
         # Adjust for servings
         # Scale based on servings made vs recipe's default servings
-        recipe_servings = recipe_info.get("servings", 1)
+        recipe_servings = recipe_info.get("servings", 1) or 1
         adjusted_amount = (amount / recipe_servings) * request.servings_made
         
         if name and adjusted_amount > 0:
@@ -458,6 +466,45 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
     # Subtract from inventory
     results = subtract_inventory_items(user_id, ingredient_quantities)
     
+    # Record a 'cooked' history entry in a dedicated subcollection, including a light recipe snapshot
+    try:
+        from datetime import datetime
+        import uuid
+        cooked_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+        # Keep a compact snapshot to avoid refetching from Spoonacular later
+        recipe_snapshot = {
+            "id": str(recipe_info.get("id")),
+            "title": recipe_info.get("title"),
+            "image": recipe_info.get("image"),
+            "summary": recipe_info.get("summary"),
+            "servings": recipe_info.get("servings"),
+            # store just what's needed for quick cards/normalization on the frontend
+            "extendedIngredients": [
+                {
+                    "name": ing.get("name"),
+                    "measures": ing.get("measures"),
+                    "amount": ing.get("measures", {}).get("metric", {}).get("amount"),
+                    "unit": ing.get("measures", {}).get("metric", {}).get("unitShort"),
+                }
+                for ing in (recipe_info.get("extendedIngredients") or [])
+            ],
+            "dishTypes": recipe_info.get("dishTypes", []),
+            "cuisines": recipe_info.get("cuisines", []),
+            "readyInMinutes": recipe_info.get("readyInMinutes"),
+        }
+        cooked_doc = {
+            "id": cooked_id,
+            "user_id": user_id,
+            "recipe_id": str(request.recipe_id),
+            "servings_made": float(request.servings_made),
+            "cooked_at": now,
+            "recipe": recipe_snapshot,
+        }
+        db.collection("users").document(user_id).collection("cooked").document(cooked_id).set(cooked_doc)
+    except Exception as e:
+        print(f"Warning: failed to record cooked history: {e}")
+
     # Update CMAB with positive reward for cooking
     await update_cmab_with_feedback(
         user_id=user_id,
@@ -475,6 +522,39 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
         "cmab_updated": True,
         "message": "Inventory updated and preferences learned successfully"
     }
+
+
+@app.get("/api/users/{user_id}/cooked")
+async def list_cooked_history(user_id: str, limit: int = Query(12, description="Max number of cooked records")):
+    """Return recent cooked recipe history for a user (most recent first)."""
+    try:
+        docs = (
+            db.collection("users")
+            .document(user_id)
+            .collection("cooked")
+            .order_by("cooked_at", direction="DESCENDING")
+            .limit(limit)
+            .get()
+        )
+        return [d.to_dict() for d in docs]
+    except Exception as e:
+        print(f"Error listing cooked history: {e}")
+        # Fallback without ordering if index is missing
+        try:
+            docs = (
+                db.collection("users")
+                .document(user_id)
+                .collection("cooked")
+                .limit(limit)
+                .get()
+            )
+            # sort client-side by cooked_at desc if present
+            items = [d.to_dict() for d in docs]
+            items.sort(key=lambda x: x.get("cooked_at", 0), reverse=True)
+            return items[:limit]
+        except Exception as e2:
+            print(f"Error fallback listing cooked history: {e2}")
+            return []
 
 
 # ========== FEEDBACK ENDPOINTS ==========
