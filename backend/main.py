@@ -34,6 +34,7 @@ def get_user_by_email(email: str):
 
 # Services
 from src.services.inventory_service import add_inventory_item, subtract_inventory_items, get_expiring_soon
+from src.services.foodkeeper_service import estimate_shelf_life_days, choose_storage
 from src.services.recommendation_service import (
     get_personalized_recommendations,
     get_recommendations_by_preferences,
@@ -176,33 +177,16 @@ class AddInventoryRequest(BaseModel):
 
 
 def get_shelf_life_days(item_name: str) -> int:
-    #TODO: Improve using a separate datasource or ML model
-    """Get estimated shelf life in days based on item name."""
-    item_lower = item_name.lower()
-    
-    # Dairy products
-    if any(word in item_lower for word in ['milk', 'cheese', 'yogurt', 'cream', 'butter']):
-        return 7
-    # Fresh meat
-    elif any(word in item_lower for word in ['chicken', 'beef', 'pork', 'fish', 'meat']):
-        return 3
-    # Fresh vegetables
-    elif any(word in item_lower for word in ['lettuce', 'spinach', 'tomato', 'cucumber', 'carrot']):
-        return 5
-    # Fruits
-    elif any(word in item_lower for word in ['apple', 'banana', 'orange', 'berry', 'grape']):
-        return 7
-    # Bread
-    elif any(word in item_lower for word in ['bread', 'bun', 'roll']):
-        return 3
-    # Eggs
-    elif 'egg' in item_lower:
-        return 21
-    # Pantry staples
-    elif any(word in item_lower for word in ['rice', 'pasta', 'flour', 'oil', 'vinegar']):
-        return 365
-    # Default
-    else:
+    """Get estimated shelf life in days using FSIS USDA FoodKeeper data.
+
+    We infer the storage location heuristically to avoid changing the API.
+    """
+    try:
+        storage = choose_storage(item_name)
+        return int(estimate_shelf_life_days(item_name, storage))
+    except Exception as e:
+        # Fallback to conservative default if anything goes wrong
+        print(f"FoodKeeper shelf life lookup failed for '{item_name}': {e}")
         return 14
 
 @app.post("/api/users/{user_id}/inventory", response_model=InventoryItem, status_code=201)

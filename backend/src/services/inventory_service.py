@@ -4,6 +4,7 @@ Auto-calculates expiry dates based on quantity
 """
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Tuple
+from .foodkeeper_service import estimate_shelf_life_days, choose_storage
 from src.db.crud import (
     create_inventory_item,
     get_user_inventory,
@@ -14,65 +15,8 @@ from src.db.crud import (
 from src.db.models import InventoryItemCreate, InventoryItem, InventoryItemUpdate
 
 
-# Default shelf life for common items (in days)
-SHELF_LIFE_DEFAULTS: Dict[str, int] = {
-    # Dairy
-    "milk": 7,
-    "cheese": 14,
-    "yogurt": 10,
-    "butter": 30,
-    "cream": 7,
-    
-    # Produce
-    "lettuce": 5,
-    "tomatoes": 7,
-    "tomato": 7,
-    "carrots": 14,
-    "carrot": 14,
-    "potatoes": 30,
-    "potato": 30,
-    "onions": 30,
-    "onion": 30,
-    "garlic": 30,
-    "bananas": 5,
-    "banana": 5,
-    "apples": 14,
-    "apple": 14,
-    "berries": 3,
-    "strawberries": 3,
-    "blueberries": 5,
-    "spinach": 5,
-    "broccoli": 7,
-    "bell pepper": 10,
-    "peppers": 10,
-    
-    # Proteins
-    "chicken": 2,
-    "beef": 3,
-    "pork": 3,
-    "fish": 1,
-    "salmon": 2,
-    "eggs": 21,
-    "egg": 21,
-    
-    # Herbs
-    "basil": 5,
-    "cilantro": 7,
-    "parsley": 7,
-    "mint": 7,
-    
-    # Pantry (longer shelf life)
-    "flour": 180,
-    "sugar": 730,
-    "rice": 365,
-    "pasta": 730,
-    "beans": 365,
-    "lentils": 365,
-    "canned": 730,
-    
-    # Default for unknown items
-    "default": 7
-}
+# Deprecated defaults: replaced by FoodKeeper-backed estimation
+SHELF_LIFE_DEFAULTS: Dict[str, int] = {"default": 7}
 
 
 def calculate_expiry_date(item_name: str, quantity: float) -> datetime:
@@ -87,21 +31,16 @@ def calculate_expiry_date(item_name: str, quantity: float) -> datetime:
     Returns:
         Calculated expiry date as datetime
     """
-    # Normalize item name
-    item_lower = item_name.lower().strip()
+    # Base shelf life from FoodKeeper dataset (storage inferred)
+    try:
+        storage = choose_storage(item_name)
+        base_days = int(estimate_shelf_life_days(item_name, storage))
+    except Exception:
+        base_days = SHELF_LIFE_DEFAULTS.get("default", 7)
     
-    # Find matching shelf life
-    base_days = SHELF_LIFE_DEFAULTS.get("default", 7)
-    
-    for key, days in SHELF_LIFE_DEFAULTS.items():
-        if key in item_lower or item_lower in key:
-            base_days = days
-            break
-    
-    # Adjust based on quantity (larger quantities might expire sooner)
-    # For perishables, if quantity > 5, reduce shelf life slightly
+    # Optional adjustment based on large quantity for highly perishable items
     if base_days <= 14 and quantity > 5:
-        base_days = int(base_days * 0.8)
+        base_days = max(1, int(base_days * 0.85))
     
     # Calculate expiry date as datetime (not date) for Firestore compatibility
     # Use UTC for server-side timestamps
