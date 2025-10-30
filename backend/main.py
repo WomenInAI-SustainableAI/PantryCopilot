@@ -396,10 +396,34 @@ async def get_filtered_recommendations(
 # ========== RECIPE COOKING / "COOKED" BUTTON ==========
 
 class CookedRecipeRequest(BaseModel):
-    """Request model for marking a recipe as cooked."""
-    recipe_id: str = Field(..., description="Spoonacular recipe ID")
-    # Allow fractional servings (e.g., 1.5, 2.25)
-    servings_made: float = Field(1.0, gt=0, description="Number of servings made (can be fractional)")
+        """Request model for marking a recipe as cooked.
+
+        SNAPSHOT-COOK SUPPORT (temporary):
+        This block enables a snapshot-based cook path to bypass Spoonacular (e.g., 402 quota).
+        To REMOVE snapshot support later:
+            1) Delete the optional fields below (recipe_title, servings, dish_types, cuisines,
+                 extended_ingredients, ingredients).
+            2) In mark_recipe_cooked, delete the 'use_snapshot' branch and fallback usage.
+            3) In the cooked snapshot creation, remove the simple-ingredients translation.
+
+        Supports two modes:
+        - Spoonacular mode: provide recipe_id only; backend fetches details.
+        - Snapshot mode: provide a lightweight snapshot with ingredients to avoid external API calls
+            (used for mock data or when quota is exceeded).
+        """
+        recipe_id: str = Field(..., description="Recipe ID (Spoonacular or mock)")
+        # Allow fractional servings (e.g., 1.5, 2.25)
+        servings_made: float = Field(1.0, gt=0, description="Number of servings made (can be fractional)")
+        # Optional snapshot fields to bypass Spoonacular
+        recipe_title: Optional[str] = Field(None, description="Recipe title")
+        servings: Optional[int] = Field(None, description="Default servings of the recipe")
+        dish_types: Optional[List[str]] = Field(None, description="Dish types for CMAB categorization")
+        cuisines: Optional[List[str]] = Field(None, description="Cuisines for CMAB categorization")
+        # Either extended_ingredients (Spoonacular-like) or simple ingredients
+        extended_ingredients: Optional[List[Dict]] = Field(None, description="Spoonacular-like extendedIngredients payload")
+        ingredients: Optional[List[Dict]] = Field(
+                None,
+                description="Simple ingredients with name, quantity, unit (from normalized recipe)")
 
 
 @app.post("/api/users/{user_id}/recipes/cooked")
@@ -417,33 +441,64 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
     6. Returns status of each ingredient update
     """
     
-    # Validate recipe id and fetch info (single API call contains all needed data)
-    try:
-        rid = int(request.recipe_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="recipe_id must be an integer")
-    try:
-        recipe_info = await get_recipe_information(rid)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch recipe information: {e}")
+    # SNAPSHOT-COOK: If snapshot is provided, use it and SKIP Spoonacular entirely
+    use_snapshot = bool(request.extended_ingredients or request.ingredients)
+    recipe_info: Dict = {}
+    if use_snapshot:
+        recipe_info = {
+            "id": request.recipe_id,
+            "title": request.recipe_title or "",
+            "servings": request.servings or 1,
+            "dishTypes": request.dish_types or [],
+            "cuisines": request.cuisines or [],
+            "extendedIngredients": request.extended_ingredients or [],
+        }
+    else:
+        # Validate recipe id and fetch info (single API call contains all needed data)
+        try:
+            rid = int(request.recipe_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="recipe_id must be an integer when no snapshot is provided")
+        try:
+            recipe_info = await get_recipe_information(rid)
+        except Exception as e:
+            # SNAPSHOT-COOK: If Spoonacular fails, but client provided snapshot fields, try to proceed
+            if request.recipe_title or request.ingredients or request.extended_ingredients:
+                recipe_info = {
+                    "id": request.recipe_id,
+                    "title": request.recipe_title or "",
+                    "servings": request.servings or 1,
+                    "dishTypes": request.dish_types or [],
+                    "cuisines": request.cuisines or [],
+                    "extendedIngredients": request.extended_ingredients or [],
+                }
+            else:
+                raise HTTPException(status_code=502, detail=f"Failed to fetch recipe information: {e}")
     
-    # Extract ingredient quantities from extendedIngredients
-    ingredient_quantities = {}
-    for ingredient in recipe_info.get("extendedIngredients", []):
-        name = ingredient.get("name", "")
-        # Get amount in metric units
-        amount = ingredient.get("measures", {}).get("metric", {}).get("amount", 0)
-        
-        # Adjust for servings
-        # Scale based on servings made vs recipe's default servings
-        recipe_servings = recipe_info.get("servings", 1) or 1
-        adjusted_amount = (amount / recipe_servings) * request.servings_made
-        
-        if name and adjusted_amount > 0:
-            ingredient_quantities[name] = adjusted_amount
+    # Extract ingredient quantities
+    ingredient_quantities: Dict[str, float] = {}
+    if request.ingredients:
+        # SNAPSHOT-COOK: Simple ingredient objects: { name, quantity, unit }
+        recipe_servings = int(request.servings or recipe_info.get("servings", 1) or 1)
+        for ing in (request.ingredients or []):
+            name = (ing or {}).get("name") or ""
+            amount = float((ing or {}).get("quantity") or 0)
+            adjusted_amount = (amount / max(1, recipe_servings)) * float(request.servings_made)
+            if name and adjusted_amount > 0:
+                ingredient_quantities[name] = adjusted_amount
+    else:
+        # Spoonacular-like extended ingredients
+        for ingredient in recipe_info.get("extendedIngredients", []):
+            name = ingredient.get("name", "")
+            amount = ingredient.get("measures", {}).get("metric", {}).get("amount", 0)
+            # Adjust for servings
+            recipe_servings = recipe_info.get("servings", 1) or 1
+            adjusted_amount = (float(amount) / max(1, recipe_servings)) * float(request.servings_made)
+            if name and adjusted_amount > 0:
+                ingredient_quantities[name] = adjusted_amount
     
     # Classify recipe for CMAB
-    recipe_tags = recipe_info.get("dishTypes", []) + recipe_info.get("cuisines", [])
+    recipe_tags = (recipe_info.get("dishTypes", []) or []) + (recipe_info.get("cuisines", []) or [])
     recipe_categories = RecipeCategory.classify_recipe(
         recipe_info.get("title", ""),
         recipe_tags
@@ -479,6 +534,20 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
             "cuisines": recipe_info.get("cuisines", []),
             "readyInMinutes": recipe_info.get("readyInMinutes"),
         }
+        # SNAPSHOT-COOK: If we were provided simple ingredients, embed a translated extendedIngredients for consistency
+        if (not recipe_snapshot["extendedIngredients"]) and request.ingredients:
+            ei = []
+            for ing in (request.ingredients or []):
+                name = (ing or {}).get("name")
+                qty = float((ing or {}).get("quantity") or 0)
+                unit = (ing or {}).get("unit") or ""
+                ei.append({
+                    "name": name,
+                    "measures": {"metric": {"amount": qty, "unitShort": unit}},
+                    "amount": qty,
+                    "unit": unit,
+                })
+            recipe_snapshot["extendedIngredients"] = ei
         cooked_doc = {
             "id": cooked_id,
             "user_id": user_id,

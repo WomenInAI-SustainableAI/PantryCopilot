@@ -237,12 +237,38 @@ export interface CookedRecipeResponse {
     message: string
 }
 
-export async function cookRecipe(userId: string, recipeId: string, servingsMade: number = 1): Promise<{ success: boolean; data?: CookedRecipeResponse; message?: string }>{
+// SNAPSHOT-COOK SUPPORT (temporary):
+// cookRecipe accepts an optional 'snapshot' so the backend can bypass Spoonacular (402 quota/mocks).
+// To REMOVE snapshot support later:
+//   - Delete the 'snapshot' parameter and its usage in the body below.
+//   - The backend can then require Spoonacular for cooking as before.
+export async function cookRecipe(
+    userId: string,
+    recipeId: string,
+    servingsMade: number = 1,
+    snapshot?: {
+        title?: string
+        servings?: number
+        dishTypes?: string[]
+        cuisines?: string[]
+        ingredients?: Array<{ name: string; quantity: number; unit?: string }>
+        extendedIngredients?: Array<{ name: string; measures?: { metric?: { amount?: number; unitShort?: string } } }>
+    }
+): Promise<{ success: boolean; data?: CookedRecipeResponse; message?: string }>{
     try {
-        const res = await fetch(`${API_BASE}/api/users/${userId}/recipes/cooked`, {
+                const res = await fetch(`${API_BASE}/api/users/${userId}/recipes/cooked`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ recipe_id: recipeId, servings_made: servingsMade })
+                                    body: JSON.stringify({
+                            recipe_id: recipeId,
+                            servings_made: servingsMade,
+                            recipe_title: snapshot?.title,
+                            servings: snapshot?.servings,
+                            dish_types: snapshot?.dishTypes,
+                            cuisines: snapshot?.cuisines,
+                            ingredients: snapshot?.ingredients,
+                            extended_ingredients: snapshot?.extendedIngredients,
+                        })
         });
         if (!res.ok) {
             let message = res.statusText || 'Failed to mark recipe as cooked.';

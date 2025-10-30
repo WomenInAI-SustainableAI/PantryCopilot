@@ -330,7 +330,27 @@ export default function RecipeDetails({
     }
 
   // Use the selected servings specified by the user
-  const result = await cookRecipe(userId, normalized.id, Math.max(1, Number(selectedServings) || 1));
+  // SNAPSHOT-COOK SUPPORT (temporary):
+  // Prepare a snapshot so backend can bypass Spoonacular (402 quota or mock data)
+  // To REMOVE later: delete this snapshot object and pass only (userId, id, servings) to cookRecipe
+  const cookBaseServings = originalServings || Number((recipe as any)?.servings) || 1;
+  const snapshot = {
+    title: normalized.title,
+    servings: cookBaseServings,
+    dishTypes: ((recipe as any)?.dishTypes || []) as string[],
+    cuisines: ((recipe as any)?.cuisines || []) as string[],
+    ingredients: (normalized.ingredients || []).map((ing: Ingredient) => ({
+      name: ing.name,
+      quantity: ing.quantity || 0,
+      unit: ing.unit || ''
+    })),
+  };
+  const result = await cookRecipe(
+    userId,
+    normalized.id,
+    Math.max(1, Number(selectedServings) || 1),
+    snapshot
+  );
     if (!result.success || !result.data) {
       toast({
         title: "Couldn’t mark as cooked",
