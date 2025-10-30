@@ -477,25 +477,32 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
     
     # Extract ingredient quantities
     ingredient_quantities: Dict[str, float] = {}
+    ingredient_units: Dict[str, str] = {}
     if request.ingredients:
         # SNAPSHOT-COOK: Simple ingredient objects: { name, quantity, unit }
         recipe_servings = int(request.servings or recipe_info.get("servings", 1) or 1)
         for ing in (request.ingredients or []):
             name = (ing or {}).get("name") or ""
             amount = float((ing or {}).get("quantity") or 0)
+            unit = (ing or {}).get("unit") or ""
             adjusted_amount = (amount / max(1, recipe_servings)) * float(request.servings_made)
             if name and adjusted_amount > 0:
                 ingredient_quantities[name] = adjusted_amount
+                if unit:
+                    ingredient_units[name] = unit
     else:
         # Spoonacular-like extended ingredients
         for ingredient in recipe_info.get("extendedIngredients", []):
             name = ingredient.get("name", "")
             amount = ingredient.get("measures", {}).get("metric", {}).get("amount", 0)
+            unit = ingredient.get("measures", {}).get("metric", {}).get("unitShort", "")
             # Adjust for servings
             recipe_servings = recipe_info.get("servings", 1) or 1
             adjusted_amount = (float(amount) / max(1, recipe_servings)) * float(request.servings_made)
             if name and adjusted_amount > 0:
                 ingredient_quantities[name] = adjusted_amount
+                if unit:
+                    ingredient_units[name] = unit
     
     # Classify recipe for CMAB
     recipe_tags = (recipe_info.get("dishTypes", []) or []) + (recipe_info.get("cuisines", []) or [])
@@ -505,7 +512,7 @@ async def mark_recipe_cooked(user_id: str, request: CookedRecipeRequest):
     )
     
     # Subtract from inventory
-    results = subtract_inventory_items(user_id, ingredient_quantities)
+    results = subtract_inventory_items(user_id, ingredient_quantities, ingredient_units)
     
     # Record a 'cooked' history entry in a dedicated subcollection, including a light recipe snapshot
     try:

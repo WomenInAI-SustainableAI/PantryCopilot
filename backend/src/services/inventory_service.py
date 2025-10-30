@@ -83,7 +83,8 @@ def add_inventory_item(
 
 def subtract_inventory_items(
     user_id: str,
-    recipe_ingredients: Dict[str, float]
+    recipe_ingredients: Dict[str, float],
+    ingredient_units: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
     """
     Subtract recipe ingredients from user inventory after cooking.
@@ -178,6 +179,64 @@ def subtract_inventory_items(
         matches.sort(key=lambda it: (_expiry_key(it), it.quantity))
         return matches
 
+    # --- Unit handling helpers ---
+    def _norm_unit(u: Optional[str]) -> str:
+        u = (u or "").strip().lower()
+        # common aliases
+        aliases = {
+            "gram": "g", "grams": "g", "g": "g",
+            "kilogram": "kg", "kilograms": "kg", "kg": "kg",
+            "milligram": "mg", "milligrams": "mg", "mg": "mg",
+            "pound": "lb", "pounds": "lb", "lbs": "lb", "lb": "lb",
+            "ounce": "oz", "ounces": "oz", "oz": "oz",
+            "milliliter": "ml", "millilitre": "ml", "milliliters": "ml", "millilitres": "ml", "ml": "ml",
+            "liter": "l", "litre": "l", "liters": "l", "litres": "l", "l": "l",
+            "piece": "piece", "pieces": "piece", "pc": "piece", "pcs": "piece", "count": "piece", "unit": "piece", "item": "piece", "items": "piece",
+        }
+        return aliases.get(u, u)
+
+    def _unit_family(u: str) -> str:
+        if u in ("mg", "g", "kg", "oz", "lb"):
+            return "weight"
+        if u in ("ml", "l"):
+            return "volume"
+        if u in ("piece", ""):
+            return "count"
+        return "other"
+
+    def _to_base(amount: float, unit: str) -> Tuple[float, str]:
+        """Convert amount to base unit per family. Returns (amount_in_base, base_unit)."""
+        fam = _unit_family(unit)
+        if fam == "weight":
+            # base: grams
+            factors = {"mg": 0.001, "g": 1.0, "kg": 1000.0, "oz": 28.349523125, "lb": 453.59237}
+            return amount * factors.get(unit, 1.0), "g"
+        if fam == "volume":
+            # base: milliliters
+            factors = {"ml": 1.0, "l": 1000.0}
+            return amount * factors.get(unit, 1.0), "ml"
+        # count/other: base is piece or passthrough
+        return amount, "piece" if fam == "count" else unit
+
+    def _convert(amount: float, from_unit: str, to_unit: str) -> float:
+        """Convert amount between compatible units; if incompatible, return original amount."""
+        f = _unit_family(from_unit)
+        t = _unit_family(to_unit)
+        if f != t:
+            return amount  # incompatible or unknown family; no conversion
+        # Convert to base then to target
+        base_amt, base_u = _to_base(amount, from_unit)
+        if f == "weight":
+            # base grams -> target
+            back = {"mg": 1000.0, "g": 1.0, "kg": 0.001, "oz": 1/28.349523125, "lb": 1/453.59237}
+            return base_amt * back.get(to_unit, 1.0)
+        if f == "volume":
+            # base ml -> target
+            back = {"ml": 1.0, "l": 0.001}
+            return base_amt * back.get(to_unit, 1.0)
+        # count or other
+        return amount
+
     for ingredient_name, quantity_used in recipe_ingredients.items():
         # Find ALL matching inventory items; consume oldest first
         matches = _match_all_inventory(ingredient_name)
@@ -185,12 +244,25 @@ def subtract_inventory_items(
             results[ingredient_name] = "not found in inventory"
             continue
 
+        # Determine the unit used for this ingredient usage (if provided)
+        ing_unit = _norm_unit((ingredient_units or {}).get(ingredient_name))
         remaining = float(quantity_used or 0)
         updates: List[str] = []
         for it in matches:
             if remaining <= 0:
                 break
-            take = min(it.quantity, remaining)
+            inv_unit = _norm_unit(getattr(it, "unit", None))
+            if ing_unit and inv_unit:
+                # Compare in ingredient unit
+                inv_qty_in_ing_unit = _convert(it.quantity, inv_unit, ing_unit)
+                take_in_ing_unit = min(inv_qty_in_ing_unit, remaining)
+                # Convert the taken amount back to inventory unit for storage update
+                take = _convert(take_in_ing_unit, ing_unit, inv_unit)
+            else:
+                # No unit info; fall back to raw numbers
+                take = min(it.quantity, remaining)
+                ing_unit = ing_unit or inv_unit  # carry forward if only inv unit known
+
             new_qty = it.quantity - take
             if new_qty <= 0:
                 delete_inventory_item(user_id, it.id)
@@ -199,7 +271,12 @@ def subtract_inventory_items(
                 update_data = InventoryItemUpdate(quantity=new_qty)
                 update_inventory_item(user_id, it.id, update_data)
                 updates.append(f"updated {it.item_name} (new qty: {new_qty:g})")
-            remaining -= take
+            # Decrease remaining in ingredient unit if available
+            if ing_unit and inv_unit:
+                remaining_in_ing_unit = _convert(take, inv_unit, ing_unit)
+                remaining -= remaining_in_ing_unit
+            else:
+                remaining -= take
 
         if remaining > 0:
             updates.append(f"missing {remaining:g}")
