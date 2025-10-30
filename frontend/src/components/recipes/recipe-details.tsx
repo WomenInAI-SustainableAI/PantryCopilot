@@ -377,6 +377,23 @@ export default function RecipeDetails({
           for (const t of ingSet) { if (!invSet.has(t)) { subset = false; break; } }
           if (subset) return i;
         }
+        // Generic fallback: allow a single-token generic inventory item (e.g., 'chicken')
+        // to satisfy more specific ingredient names (e.g., 'chicken breast'). Conservative allow-list.
+        const GENERIC_FALLBACKS = new Set([
+          'chicken','beef','pork','lamb','turkey','fish','seafood','shrimp',
+          'rice','pasta','noodles','tomato','potato','onion',
+          'milk','cheese','butter','yogurt','egg','eggs',
+          'flour','sugar','oil',
+        ]);
+        for (const i of (inventory || [])) {
+          const invSet = new Set(tokens(norm(i.name)));
+          if (invSet.size === 1) {
+            const token = Array.from(invSet)[0];
+            if (GENERIC_FALLBACKS.has(token) && ingSet.has(token)) {
+              return i;
+            }
+          }
+        }
       }
       return undefined;
     };

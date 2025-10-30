@@ -132,6 +132,17 @@ def subtract_inventory_items(
         ing_norm = _norm(ing_name)
         ing_tokens = _tokenize(ing_name)
         matches: List[InventoryItem] = []
+        # Allow-list of generic tokens we permit to match more specific ingredients when needed
+        GENERIC_FALLBACKS = set([
+            # core proteins
+            "chicken", "beef", "pork", "lamb", "turkey", "fish", "seafood", "shrimp",
+            # common pantry staples (keep conservative)
+            "rice", "pasta", "noodles", "tomato", "potato", "onion",
+            # dairy basics
+            "milk", "cheese", "butter", "yogurt", "egg", "eggs",
+            # baking basics
+            "flour", "sugar", "oil",
+        ])
         # Exact matches first
         for it in inventory:
             if _norm(it.item_name) == ing_norm:
@@ -145,6 +156,16 @@ def subtract_inventory_items(
                 inv_tokens = set(_tokenize(it.item_name))
                 if ing_set.issubset(inv_tokens):
                     matches.append(it)
+        # Generic fallback: if no matches yet and ingredient is more specific (2+ tokens),
+        # allow single-token inventory items that are generic and appear in the ingredient tokens.
+        if not matches and len(ing_tokens) >= 2:
+            ing_set = set(ing_tokens)
+            for it in inventory:
+                inv_tokens = set(_tokenize(it.item_name))
+                if len(inv_tokens) == 1:
+                    token = next(iter(inv_tokens)) if inv_tokens else ""
+                    if token and token in GENERIC_FALLBACKS and token in ing_set:
+                        matches.append(it)
         # Sort by expiry (earliest first), then by quantity ascending as tiebreaker
         def _expiry_key(it: InventoryItem):
             dt = it.expiry_date
