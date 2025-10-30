@@ -187,6 +187,40 @@ export async function getInventory(userId: string): Promise<InventoryItem[]> {
     return response.json()
 }
 
+// Get expired inventory items (expiry_date < now)
+export async function getExpiredInventory(userId: string): Promise<InventoryItem[]> {
+    const response = await fetch(`${API_BASE}/api/users/${userId}/inventory/expired`)
+    if (!response.ok) throw new Error('Failed to fetch expired inventory')
+    return response.json()
+}
+
+// Cross-device acknowledgement of expired items
+export async function getExpiredAck(userId: string): Promise<string[]> {
+    try {
+        const res = await fetch(`${API_BASE}/api/users/${userId}/inventory/expired/ack`);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return Array.isArray(data?.keys) ? data.keys as string[] : [];
+    } catch {
+        return [];
+    }
+}
+
+export async function addExpiredAck(userId: string, keys: string[]): Promise<boolean> {
+    try {
+        const res = await fetch(`${API_BASE}/api/users/${userId}/inventory/expired/ack`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keys: Array.from(new Set(keys.filter(Boolean))) })
+        });
+        if (!res.ok) return false;
+        const data = await res.json();
+        return !!data?.ok;
+    } catch {
+        return false;
+    }
+}
+
 export async function updateInventoryItem(userId: string, itemId: string, updates: Partial<InventoryItem>): Promise<InventoryItem> {
     const response = await fetch(`${API_BASE}/api/users/${userId}/inventory/${itemId}`, {
         method: 'PUT',

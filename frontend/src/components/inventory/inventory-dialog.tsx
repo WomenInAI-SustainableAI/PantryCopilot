@@ -34,8 +34,9 @@ import { getExpiryInfo } from "@/lib/expiry";
 import { Badge } from "../ui/badge";
 import { PlusCircle, Trash2, Edit, Info } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { addInventoryItem, deleteInventoryItem, updateInventoryItem } from "@/app/actions";
+import { addInventoryItem, deleteInventoryItem, updateInventoryItem, getExpiredInventory } from "@/app/actions";
 import { useAuth } from "@/lib/auth";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface InventoryDialogProps {
   children: React.ReactNode;
@@ -50,6 +51,7 @@ export default function InventoryDialog({
 }: InventoryDialogProps) {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<string>("current");
   const [editingItem, setEditingItem] = useState<InventoryFormItem | null>(null);
   const [newItem, setNewItem] = useState({
     name: "",
@@ -91,6 +93,27 @@ export default function InventoryDialog({
     ...usUnits,
     ...universalUnits,
   ];
+
+  // Expired items state
+  const [expiredItems, setExpiredItems] = useState<InventoryItem[]>([]);
+  const [loadingExpired, setLoadingExpired] = useState(false);
+
+  const loadExpired = async () => {
+    if (!user?.id) return;
+    setLoadingExpired(true);
+    try {
+      const list = await getExpiredInventory(user.id);
+      setExpiredItems(Array.isArray(list) ? list : []);
+    } catch (e) {
+      setExpiredItems([]);
+    } finally {
+      setLoadingExpired(false);
+    }
+  };
+
+  // When dialog opens or when switching to the expired tab, load expired items
+  // Also reload after deletions handled below
+  
 
   // Compute if there are changes while editing to disable Update button when unchanged
   const isEditing = !!editingItem;
@@ -225,7 +248,13 @@ export default function InventoryDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(v) => {
+      setOpen(v);
+      if (v) {
+        // Load expired list on open so it's ready if user clicks the tab
+        loadExpired();
+      }
+    }}>
       <DialogTrigger asChild>{children}</DialogTrigger>
       <DialogContent className="max-w-4xl">
         <DialogHeader>
@@ -234,7 +263,7 @@ export default function InventoryDialog({
             Add, edit, or remove items from your pantry.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid md:grid-cols-3 gap-8 py-4">
+  <div className="grid md:grid-cols-3 gap-8 py-4">
           <div className="md:col-span-1 space-y-4">
             <h3 className="font-semibold font-headline">{editingItem ? 'Edit Item' : 'Add New Item'}</h3>
             <div className="space-y-2">
@@ -375,67 +404,151 @@ export default function InventoryDialog({
             </div>
           </div>
           <div className="md:col-span-2">
-            <h3 className="font-semibold font-headline mb-4">Current Inventory</h3>
-            <div className="border rounded-lg max-h-96 overflow-auto">
-              <Table>
-                <TableHeader className="sticky top-0 bg-muted/50">
-                  <TableRow>
-                    <TableHead>Item</TableHead>
-                    <TableHead>Quantity</TableHead>
-                    <TableHead>Expiry</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {inventory.map((item) => (
-                    <TableRow key={item.id}>
-                      <TableCell className="font-medium">{item.name}</TableCell>
-                      <TableCell>
-                        {item.quantity} {item.unit}
-                      </TableCell>
-                      <TableCell>{getExpiryBadge(item.expiryDate)}</TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex gap-1 justify-end">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              setEditingItem(item);
-                              // Prefill purchaseDate from item and compute shelf life from existing dates
-                              const purchaseDateISO = item.purchaseDate ? new Date(item.purchaseDate) : new Date();
-                              const expiryDateISO = item.expiryDate ? new Date(item.expiryDate) : addDays(purchaseDateISO, 0);
-                              const currentShelfLife = Math.max(
-                                0,
-                                differenceInDays(expiryDateISO, purchaseDateISO)
-                              );
-                              // If item unit isn't in options, switch to custom and seed value
-                              const unitInList = [...availableUnits.map(u => u.value)].includes(item.unit);
-                              setNewItem({
-                                name: item.name,
-                                quantity: item.quantity.toString(),
-                                unit: unitInList ? item.unit : "__custom",
-                                purchaseDate: format(purchaseDateISO, "yyyy-MM-dd"),
-                                shelfLife: String(currentShelfLife),
-                              });
-                              if (!unitInList) setCustomUnit(item.unit);
-                            }}
-                          >
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => handleRemoveItem(item.id)}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            <Tabs value={activeTab} onValueChange={(v) => {
+              setActiveTab(v);
+              if (v === 'expired') loadExpired();
+            }}>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-semibold font-headline">Inventory</h3>
+                <TabsList>
+                  <TabsTrigger value="current">Current</TabsTrigger>
+                  <TabsTrigger value="expired">Expired</TabsTrigger>
+                </TabsList>
+              </div>
+
+              <TabsContent value="current">
+                <div className="border rounded-lg max-h-96 overflow-auto">
+                  <Table>
+                    <TableHeader className="sticky top-0 bg-muted/50">
+                      <TableRow>
+                        <TableHead>Item</TableHead>
+                        <TableHead>Quantity</TableHead>
+                        <TableHead>Expiry</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {inventory.filter((item) => {
+                        // Hide expired items from current tab
+                        const d = new Date(item.expiryDate);
+                        return !isNaN(d.getTime()) && differenceInDays(d, new Date()) >= 0;
+                      }).map((item) => (
+                        <TableRow key={item.id}>
+                          <TableCell className="font-medium">{item.name}</TableCell>
+                          <TableCell>
+                            {item.quantity} {item.unit}
+                          </TableCell>
+                          <TableCell>{getExpiryBadge(item.expiryDate)}</TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex gap-1 justify-end">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => {
+                                  setEditingItem(item);
+                                  // Prefill purchaseDate from item and compute shelf life from existing dates
+                                  const purchaseDateISO = item.purchaseDate ? new Date(item.purchaseDate) : new Date();
+                                  const expiryDateISO = item.expiryDate ? new Date(item.expiryDate) : addDays(purchaseDateISO, 0);
+                                  const currentShelfLife = Math.max(
+                                    0,
+                                    differenceInDays(expiryDateISO, purchaseDateISO)
+                                  );
+                                  // If item unit isn't in options, switch to custom and seed value
+                                  const unitInList = [...availableUnits.map(u => u.value)].includes(item.unit);
+                                  setNewItem({
+                                    name: item.name,
+                                    quantity: item.quantity.toString(),
+                                    unit: unitInList ? item.unit : "__custom",
+                                    purchaseDate: format(purchaseDateISO, "yyyy-MM-dd"),
+                                    shelfLife: String(currentShelfLife),
+                                  });
+                                  if (!unitInList) setCustomUnit(item.unit);
+                                }}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleRemoveItem(item.id)}
+                              >
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="expired">
+                <div className="border rounded-lg max-h-96 overflow-auto">
+                  {loadingExpired ? (
+                    <div className="p-4 text-sm text-muted-foreground">Loading expired…</div>
+                  ) : expiredItems.length === 0 ? (
+                    <div className="p-4 text-sm text-muted-foreground">No expired items.</div>
+                  ) : (
+                    <Table>
+                      <TableHeader className="sticky top-0 bg-muted/50">
+                        <TableRow>
+                          <TableHead>Item</TableHead>
+                          <TableHead>Quantity</TableHead>
+                          <TableHead>Expired</TableHead>
+                          <TableHead className="text-right">Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {expiredItems.map((item) => (
+                          <TableRow key={item.id}>
+                            <TableCell className="font-medium">{item.item_name}</TableCell>
+                            <TableCell>
+                              {item.quantity} {item.unit}
+                            </TableCell>
+                            <TableCell>
+                              {/* Always destructive badge since in this tab all are expired */}
+                              <Badge variant="destructive">Expired on {new Date(item.expiry_date as any).toLocaleDateString()}</Badge>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex gap-1 justify-end">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={async () => {
+                                    if (!user?.id) return;
+                                    await deleteInventoryItem(user.id, item.id);
+                                    await loadExpired();
+                                  }}
+                                >
+                                  <Trash2 className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </div>
+                {expiredItems.length > 0 && (
+                  <div className="mt-3 flex justify-end">
+                    <Button
+                      variant="destructive"
+                      onClick={async () => {
+                        if (!user?.id) return;
+                        for (const it of expiredItems) {
+                          try { await deleteInventoryItem(user.id, it.id); } catch {}
+                        }
+                        await loadExpired();
+                      }}
+                    >
+                      Delete All Expired
+                    </Button>
+                  </div>
+                )}
+              </TabsContent>
+            </Tabs>
           </div>
         </div>
         <DialogFooter>

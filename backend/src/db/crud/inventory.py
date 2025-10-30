@@ -117,6 +117,19 @@ class InventoryCRUD:
         )
         
         return [InventoryItem(**doc.to_dict()) for doc in docs]
+
+    @staticmethod
+    def get_expired_items(user_id: str, now: datetime) -> List[InventoryItem]:
+        """Get inventory items strictly expired before 'now'."""
+        docs = (
+            db.collection(InventoryCRUD.USERS_COLLECTION)
+            .document(user_id)
+            .collection(InventoryCRUD.INVENTORY_SUBCOLLECTION)
+            .where(filter=FieldFilter("expiry_date", "<", now))
+            .order_by("expiry_date")
+            .get()
+        )
+        return [InventoryItem(**doc.to_dict()) for doc in docs]
     
     @staticmethod
     def update(user_id: str, item_id: str, update_data: InventoryItemUpdate) -> Optional[InventoryItem]:
@@ -228,6 +241,12 @@ async def get_expiring_items(user_id: str, days: int = 3) -> List[InventoryItem]
     from datetime import timedelta, timezone
     expiry_date = datetime.now(timezone.utc) + timedelta(days=days)
     return InventoryCRUD.get_expiring_items(user_id, expiry_date)
+
+
+async def get_expired_items(user_id: str) -> List[InventoryItem]:
+    """Get items already expired (expiry_date < now)."""
+    now = datetime.now(timezone.utc)
+    return InventoryCRUD.get_expired_items(user_id, now)
 
 
 async def update_inventory_item(

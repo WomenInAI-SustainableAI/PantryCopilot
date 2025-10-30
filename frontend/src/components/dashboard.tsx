@@ -11,7 +11,7 @@ import SidebarContent from "@/components/layout/sidebar-content";
 import Header from "@/components/layout/header";
 import type { InventoryFormItem, Recipe, NormalizedRecipe, UserPreferences, UserSettings, Ingredient } from "@/lib/types";
 import { initialUser, CUISINES, DISH_TYPES, RECOMMEND_LIMITS } from "@/lib/data";
-import { getInventory, deleteInventoryItem, getCookedRecipes } from "@/app/actions";
+import { getInventory, deleteInventoryItem, getCookedRecipes, getExpiredAck, addExpiredAck } from "@/app/actions";
 import { useAuth } from "@/lib/auth";
 import RecipeDetails from "@/components/recipes/recipe-details";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -32,6 +32,7 @@ import {
 import { getApiBaseUrl } from "@/lib/config";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+ 
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -53,6 +54,46 @@ export default function Dashboard() {
   const initialLoadCompleteRef = React.useRef(false);
   const [removedExpired, setRemovedExpired] = useState<InventoryFormItem[]>([]);
   const [showExpiredDialog, setShowExpiredDialog] = useState(false);
+  // Track which expired items have already been acknowledged by the user across logins
+  const ACK_KEY = "pc_ack_expired_v1";
+  // Ensure UTC-consistent keying: server stores/compares using UTC epoch ms
+  const toUtcEpochMs = (input: any): number => {
+    if (input instanceof Date) return input.getTime();
+    if (typeof input === 'number') return Math.trunc(input);
+    const s = String(input || '');
+    // If timezone info is present (Z or +/-HH:MM), Date will parse as UTC/offset correctly
+    const hasTZ = /Z|[+-]\d{2}:?\d{2}$/.test(s);
+    const parsed = new Date(s);
+    if (hasTZ && !Number.isNaN(parsed.getTime())) return parsed.getTime();
+    // Handle ISO without timezone explicitly as UTC
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/);
+    if (m) {
+      const [, Y, M, D, h, mi, se, ms] = m;
+      return Date.UTC(Number(Y), Number(M) - 1, Number(D), Number(h), Number(mi), Number(se), Number(ms || '0'));
+    }
+    // Date-only fallback (treat as end-of-day UTC to match backend expiry end-of-day semantics)
+    const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m2) {
+      const [, Y, M, D] = m2;
+      return Date.UTC(Number(Y), Number(M) - 1, Number(D), 23, 59, 59, 999);
+    }
+    // Fallback to native parsing
+    return parsed.getTime();
+  };
+  const getAckSet = (): Set<string> => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = window.localStorage.getItem(ACK_KEY);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw) as string[];
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch { return new Set(); }
+  };
+  const setAckSet = (s: Set<string>) => {
+    if (typeof window === 'undefined') return;
+    try { window.localStorage.setItem(ACK_KEY, JSON.stringify(Array.from(s))); } catch {}
+  };
+  const makeAckKey = (it: InventoryFormItem) => `${it.id}|${toUtcEpochMs(it.expiryDate)}`;
 
   const fetchRecommendations = React.useCallback(async (uid: string, opts?: { cuisine?: string; dishType?: string; limit?: number }) => {
     setLoadingRecommendations(true);
@@ -176,7 +217,7 @@ export default function Dashboard() {
           shelfLife: 7
         }));
 
-        // On login/initial load: remove expired items and notify the user
+        // On login/initial load: detect expired items and notify the user (do not auto-delete)
         const now = new Date();
         const expiredItems = formInventory.filter(it => {
           const d = new Date(it.expiryDate);
@@ -184,32 +225,20 @@ export default function Dashboard() {
           return differenceInDays(d, now) < 0; // already expired
         });
 
-        if (expiredItems.length > 0) {
-          const keep: InventoryFormItem[] = [];
-          const actuallyRemoved: InventoryFormItem[] = [];
-          const expiredSet = new Set(expiredItems.map(i => i.id));
-          // Start with non-expired items
-          for (const it of formInventory) {
-            if (!expiredSet.has(it.id)) keep.push(it);
-          }
-          // Try to delete expired on the server; if deletion fails, keep the item
-          for (const it of expiredItems) {
-            try {
-              await deleteInventoryItem(user.id, it.id);
-              actuallyRemoved.push(it);
-            } catch (e) {
-              // Keep it if deletion failed
-              keep.push(it);
-              console.error("Failed to delete expired item:", it.name, e);
-            }
-          }
-          setInventory(keep);
-          if (actuallyRemoved.length > 0) {
-            setRemovedExpired(actuallyRemoved);
-            setShowExpiredDialog(true);
-          }
-        } else {
-          setInventory(formInventory);
+        // Do not show expired items in current inventory UI
+        const currentInventory = formInventory.filter(it => {
+          const d = new Date(it.expiryDate);
+          return !isNaN(d.getTime()) && differenceInDays(d, now) >= 0;
+        });
+        setInventory(currentInventory);
+
+        // Show expired dialog only for items not previously acknowledged (prefer server-stored ack)
+        const serverAckKeys = await getExpiredAck(user.id);
+        const ack = new Set<string>(Array.isArray(serverAckKeys) ? serverAckKeys : []);
+        const unseen = expiredItems.filter(it => !ack.has(makeAckKey(it)));
+        if (unseen.length > 0) {
+          setRemovedExpired(unseen);
+          setShowExpiredDialog(true);
         }
         // Load recommendations from API with current filters
         await Promise.all([
@@ -300,7 +329,13 @@ export default function Dashboard() {
             expiryDate: item.expiry_date,
             shelfLife: 7,
           }));
-          setInventory(formInventory);
+          // Filter out expired from the refreshed list
+          const now = new Date();
+          const currentInventory = formInventory.filter(it => {
+            const d = new Date(it.expiryDate);
+            return !isNaN(d.getTime()) && differenceInDays(d, now) >= 0;
+          });
+          setInventory(currentInventory);
         })
         .catch(() => {/* ignore background refresh errors */});
     }
@@ -669,10 +704,10 @@ export default function Dashboard() {
         <AlertDialog open={showExpiredDialog} onOpenChange={setShowExpiredDialog}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Expired items removed</AlertDialogTitle>
+              <AlertDialogTitle>Expired items detected</AlertDialogTitle>
             </AlertDialogHeader>
             <div className="text-sm text-muted-foreground">
-              <p className="mb-2">We noticed some items had expired and removed them from your inventory:</p>
+              <p className="mb-2">These items have expired:</p>
               <ul className="list-disc pl-5 space-y-1 text-foreground">
                 {removedExpired.map((it) => (
                   <li key={it.id}>
@@ -682,7 +717,18 @@ export default function Dashboard() {
               </ul>
             </div>
             <AlertDialogFooter>
-              <AlertDialogAction onClick={() => setShowExpiredDialog(false)}>
+              <AlertDialogAction onClick={async () => {
+                // Mark currently shown expired items as acknowledged on the server for cross-device persistence
+                const keys = removedExpired.map(it => makeAckKey(it));
+                const ok = user?.id ? await addExpiredAck(user.id, keys) : false;
+                // Best-effort local fallback to avoid re-show if offline
+                try {
+                  const local = getAckSet();
+                  for (const k of keys) local.add(k);
+                  setAckSet(local);
+                } catch {}
+                setShowExpiredDialog(false);
+              }}>
                 OK
               </AlertDialogAction>
             </AlertDialogFooter>

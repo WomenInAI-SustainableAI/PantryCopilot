@@ -34,6 +34,7 @@ def get_user_by_email(email: str):
 
 # Services
 from src.services.inventory_service import add_inventory_item, subtract_inventory_items, get_expiring_soon
+from src.db.crud.inventory import get_expired_items as crud_get_expired_items
 from src.services.foodkeeper_service import estimate_shelf_life_days, choose_storage
 from src.services.recommendation_service import (
     get_personalized_recommendations,
@@ -241,6 +242,65 @@ async def list_expiring_inventory(
 ):
     """Get inventory items expiring within specified days."""
     return get_expiring_soon(user_id, days)
+
+
+@app.get("/api/users/{user_id}/inventory/expired", response_model=List[InventoryItem])
+async def list_expired_inventory(user_id: str):
+    """Get inventory items that have already expired (expiry_date < now)."""
+    try:
+        items = await crud_get_expired_items(user_id)
+        return items
+    except Exception as e:
+        print(f"Error fetching expired inventory: {e}")
+        return []
+
+
+# Acknowledgement of expired items (so we don't re-show across devices)
+class ExpiredAckPayload(BaseModel):
+    keys: List[str] = []  # keys like "<item_id>|<expiry_ts_ms>"
+
+
+@app.get("/api/users/{user_id}/inventory/expired/ack")
+async def get_expired_ack(user_id: str):
+    """Return previously acknowledged expired-item keys for this user."""
+    try:
+        doc = (
+            db.collection("users").document(user_id)
+            .collection("meta").document("expired_ack")
+            .get()
+        )
+        if doc.exists:
+            data = doc.to_dict() or {}
+            keys = list(data.get("keys", []))
+            return {"keys": keys}
+        return {"keys": []}
+    except Exception as e:
+        print(f"Error getting expired acks: {e}")
+        return {"keys": []}
+
+
+@app.post("/api/users/{user_id}/inventory/expired/ack")
+async def add_expired_ack(user_id: str, payload: ExpiredAckPayload):
+    """Merge the provided keys into the user's acknowledged set."""
+    try:
+        ref = (
+            db.collection("users").document(user_id)
+            .collection("meta").document("expired_ack")
+        )
+        existing = {}
+        snap = ref.get()
+        if snap.exists:
+            existing = snap.to_dict() or {}
+        now = __import__("datetime").datetime.utcnow()
+        merged = set(existing.get("keys", []))
+        for k in (payload.keys or []):
+            if isinstance(k, str) and k:
+                merged.add(k)
+        ref.set({"keys": list(merged), "updated_at": now})
+        return {"ok": True, "count": len(merged)}
+    except Exception as e:
+        print(f"Error updating expired acks: {e}")
+        return {"ok": False}
 
 
 @app.put("/api/users/{user_id}/inventory/{item_id}", response_model=InventoryItem)
