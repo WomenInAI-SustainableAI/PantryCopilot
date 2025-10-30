@@ -139,7 +139,17 @@ export async function getCookedRecipes(userId: string, limit: number = 6): Promi
                 if (normalizedFromSnapshots.length >= limit) break;
             }
         }
-        return normalizedFromSnapshots.slice(0, limit);
+        // Final: de-duplicate by recipe id while preserving order, then apply limit
+        const unique: any[] = [];
+        const seenIds = new Set<string>();
+        for (const r of normalizedFromSnapshots) {
+            const id = String(r?.id ?? "");
+            if (!id || seenIds.has(id)) continue;
+            seenIds.add(id);
+            unique.push(r);
+            if (unique.length >= limit) break;
+        }
+        return unique.slice(0, limit);
     } catch (e) {
         console.error('Error fetching cooked recipes:', e);
         return [];

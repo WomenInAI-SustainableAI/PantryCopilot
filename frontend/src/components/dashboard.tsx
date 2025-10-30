@@ -139,7 +139,15 @@ export default function Dashboard() {
   const fetchCooked = React.useCallback(async (uid: string) => {
     try {
       const cooked = await getCookedRecipes(uid, 6);
-      setCookedRecipes((cooked || []) as any);
+      // Extra safety: de-duplicate by recipe id in case of backend duplicates
+      const seen = new Set<string>();
+      const unique = (cooked || []).filter((r: any) => {
+        const id = String(r?.id ?? "");
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      setCookedRecipes(unique as any);
     } catch (e) {
       console.error('Failed to load cooked recipes:', e);
       setCookedRecipes([]);

@@ -405,27 +405,117 @@ export default function RecipeDetails({
     const baseServings = originalServings || 1;
     const usedFactor = (selectedServings || 1) / baseServings;
     const updates = (result.data?.inventory_updates || {}) as Record<string, string>;
-    normalized.ingredients.forEach(ing => {
-      const inv = findInv(ing.name);
-      const unit = inv?.unit || ing.unit || '';
-      const backendMsgRaw = updates[ing.name];
-      const backendMsg = toText(backendMsgRaw);
-      if (inv) {
-        let oldQty = inv.quantity;
-        let newQty: number | null = null;
-        if (backendMsg) {
-          if (/deleted/i.test(backendMsg)) {
-            newQty = 0;
-          } else {
-            const parsed = parseBackendNew(backendMsg);
-            if (parsed !== null && !Number.isNaN(parsed)) newQty = parsed;
+
+    // Helper: find ALL matching inventory items for an ingredient, sorted by earliest expiry first
+    const findAllInv = (name: string): InventoryFormItem[] => {
+      const norm = (s: string) => (s || '').toLowerCase().replace(/["']/g, '').trim();
+      const tokens = (s: string) => norm(s).split(/\s+/).filter(Boolean);
+      const ingTokens = tokens(name);
+      const GENERIC_FALLBACKS = new Set([
+        'chicken','beef','pork','lamb','turkey','fish','seafood','shrimp',
+        'rice','pasta','noodles','tomato','potato','onion',
+        'milk','cheese','butter','yogurt','egg','eggs',
+        'flour','sugar','oil',
+      ]);
+      const matches: InventoryFormItem[] = [];
+      // exact
+      for (const it of (inventory || [])) {
+        if (norm(it.name) === norm(name)) matches.push(it);
+      }
+      // subset if ingredient has 2+ tokens
+      if (ingTokens.length >= 2) {
+        const ingSet = new Set(ingTokens);
+        for (const it of (inventory || [])) {
+          if (norm(it.name) === norm(name)) continue;
+          const invSet = new Set(tokens(it.name));
+          let subset = true;
+          for (const t of ingSet) { if (!invSet.has(t)) { subset = false; break; } }
+          if (subset) matches.push(it);
+        }
+        if (matches.length === 0) {
+          // generic fallback
+          for (const it of (inventory || [])) {
+            const invTs = new Set(tokens(it.name));
+            if (invTs.size === 1) {
+              const [tok] = Array.from(invTs);
+              if (GENERIC_FALLBACKS.has(tok) && ingTokens.includes(tok)) {
+                matches.push(it);
+              }
+            }
           }
         }
-        if (newQty === null) {
-          const used = (ing.quantity || 0) * usedFactor;
-          newQty = Math.max(0, oldQty - used);
+      }
+      // sort by expiry ascending, then by quantity
+      const toTime = (d: any) => {
+        try { const t = new Date(d).getTime(); return Number.isFinite(t) ? t : Number.MAX_SAFE_INTEGER; } catch { return Number.MAX_SAFE_INTEGER; }
+      };
+      matches.sort((a, b) => (toTime(a.expiryDate) - toTime(b.expiryDate)) || (a.quantity - b.quantity));
+      return matches;
+    };
+
+    const parseBackendSegments = (msg: string): Array<{ kind: 'deleted' | 'updated'; newQty?: number; used?: number }> => {
+      const segments: Array<{ kind: 'deleted' | 'updated'; newQty?: number; used?: number }> = [];
+      if (!msg) return segments;
+      const parts = String(msg).split(';').map(s => s.trim()).filter(Boolean);
+      for (const p of parts) {
+        if (/^deleted\b/i.test(p)) {
+          // try to capture "(XYZ used)"
+          const m = /\(([^)]*?)used\)/i.exec(p);
+          let used: number | undefined;
+          if (m && m[1]) {
+            const n = parseFloat(m[1].replace(/[^0-9.+-]/g, ''));
+            if (!Number.isNaN(n)) used = n;
+          }
+          segments.push({ kind: 'deleted', used });
+        } else if (/^updated\b/i.test(p)) {
+          // support both "new qty:" and "new quantity:"
+          const m = /new\s+qty(?:uantity)?\s*:\s*([-+]?[0-9]*\.?[0-9]+)/i.exec(p);
+          const newQty = m ? parseFloat(m[1]) : undefined;
+          segments.push({ kind: 'updated', newQty });
         }
-        items.push({ type: 'quantity', name: ing.name, oldQty, newQty, unit });
+      }
+      return segments;
+    };
+
+    normalized.ingredients.forEach(ing => {
+      const backendMsgRaw = updates[ing.name];
+      const backendMsg = toText(backendMsgRaw);
+      const matches = findAllInv(ing.name);
+      if (backendMsg && matches.length > 0) {
+        const segments = parseBackendSegments(backendMsg);
+        const usedMatches = new Set<string>();
+        for (const seg of segments) {
+          // pick next candidate not used
+          let candidate: InventoryFormItem | undefined;
+          if (seg.kind === 'updated' && typeof seg.newQty === 'number') {
+            candidate = matches.find(m => !usedMatches.has(m.id) && m.quantity >= (seg.newQty ?? m.quantity));
+          }
+          if (!candidate) candidate = matches.find(m => !usedMatches.has(m.id));
+          if (!candidate) break;
+          usedMatches.add(candidate.id);
+          const unit = candidate.unit || (ing.unit || '');
+          if (seg.kind === 'deleted') {
+            items.push({ type: 'quantity', name: ing.name, oldQty: candidate.quantity, newQty: 0, unit });
+          } else if (seg.kind === 'updated') {
+            const newQty = typeof seg.newQty === 'number' ? seg.newQty : Math.max(0, candidate.quantity - ((ing.quantity || 0) * usedFactor));
+            items.push({ type: 'quantity', name: ing.name, oldQty: candidate.quantity, newQty, unit });
+          }
+        }
+        // If no segments parsed produced items, fallback to a single entry using first match
+        if (segments.length === 0) {
+          const first = matches[0];
+          const unit = first?.unit || (ing.unit || '');
+          const used = (ing.quantity || 0) * usedFactor;
+          const newQty = Math.max(0, first.quantity - used);
+          items.push({ type: 'quantity', name: ing.name, oldQty: first.quantity, newQty, unit });
+        }
+      } else if (matches.length > 0) {
+        // No backend message; estimate a single reduction against the first match
+        const first = matches[0];
+        const unit = first?.unit || (ing.unit || '');
+        const used = (ing.quantity || 0) * usedFactor;
+        const newQty = Math.max(0, first.quantity - used);
+        items.push({ type: 'quantity', name: ing.name, oldQty: first.quantity, newQty, unit });
       } else {
         const statusRaw = backendMsg || 'not found in inventory';
         items.push({ type: 'status', name: ing.name, status: statusRaw });
