@@ -1,8 +1,10 @@
 import { ExplainRecipeRecommendationInput, ExplainRecipeRecommendationOutput } from '@/ai/flows/explain-recipe-recommendation'
 import { ImproveRecommendationsFromFeedbackInput, ImproveRecommendationsFromFeedbackOutput } from '@/ai/flows/improve-recommendations-from-feedback'
 import { InventoryItem, AddInventoryRequest, UserPreferences, UserSettings } from '@/lib/types'
+import { getBaseUrl } from '@/lib/config'
 
-const API_BASE = process.env.NEXT_PUBLIC_BASE_URL;
+// Use the same API base URL helper as auth to avoid env mismatch issues
+const API_BASE = getBaseUrl();
 
 export async function getRecipeExplanation(input: ExplainRecipeRecommendationInput): Promise<ExplainRecipeRecommendationOutput> {
     try {

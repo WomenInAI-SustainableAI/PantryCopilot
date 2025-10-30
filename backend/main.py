@@ -374,6 +374,7 @@ async def get_filtered_recommendations(
     user_id: str,
     cuisine: Optional[str] = Query(None, description="Cuisine type filter"),
     diet: Optional[str] = Query(None, description="Diet type filter"),
+    dish_type: Optional[str] = Query(None, description="Dish type (e.g., appetizer, main course, dessert)"),
     limit: int = Query(10, description="Number of recommendations")
 ):
     """Get recipe recommendations with additional filters."""
@@ -381,11 +382,12 @@ async def get_filtered_recommendations(
         user_id=user_id,
         cuisine=cuisine,
         diet=diet,
+        dish_type=dish_type,
         number_of_recipes=limit
     )
     return {
         "user_id": user_id,
-        "filters": {"cuisine": cuisine, "diet": diet},
+        "filters": {"cuisine": cuisine, "diet": diet, "dish_type": dish_type},
         "count": len(recommendations),
         "recommendations": recommendations
     }

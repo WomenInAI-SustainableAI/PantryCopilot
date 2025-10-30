@@ -331,6 +331,7 @@ async def get_recommendations_by_preferences(
     user_id: str,
     cuisine: Optional[str] = None,
     diet: Optional[str] = None,
+    dish_type: Optional[str] = None,
     number_of_recipes: int = 10
 ) -> List[Dict]:
     """
@@ -338,8 +339,9 @@ async def get_recommendations_by_preferences(
     
     Args:
         user_id: User ID
-        cuisine: Cuisine type filter
-        diet: Diet type filter
+    cuisine: Cuisine type filter (e.g., italian, mexican)
+    diet: Diet type filter (e.g., vegetarian, vegan)
+    dish_type: Dish type filter (e.g., appetizer, main course, dessert, soup, salad)
         number_of_recipes: Number of recommendations
         
     Returns:
@@ -403,6 +405,7 @@ async def get_recommendations_by_preferences(
     search_results = await search_recipes_complex(
         cuisine=cuisine,
         diet=diet,
+        type=dish_type,
         exclude_ingredients=allergen_names_expanded,
         intolerances=allergen_names_expanded,
         number=number_of_recipes * 2
