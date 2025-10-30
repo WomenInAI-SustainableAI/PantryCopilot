@@ -65,38 +65,48 @@ def calculate_expiry_urgency_score(
     expiring_ingredients = []
     urgency_score = 0.0
     
+    def _norm_dt(dt):
+        if isinstance(dt, date) and not isinstance(dt, datetime):
+            return datetime.combine(dt, datetime.min.time(), tzinfo=timezone.utc)
+        if isinstance(dt, datetime):
+            if getattr(dt, 'tzinfo', None) is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        return None
+
     for ingredient in recipe_ingredients:
         ingredient_lower = ingredient.lower()
-        
-        # Find matching inventory item
+
+        # Collect all matching inventory items for this ingredient
+        candidate_days: List[int] = []
+        matched_names: List[str] = []
         for item in user_inventory:
-            if ingredient_lower in item.item_name.lower() or \
-               item.item_name.lower() in ingredient_lower:
-                
-                # Normalize to UTC-aware datetime
-                expiry_dt = item.expiry_date
-                if isinstance(expiry_dt, date) and not isinstance(expiry_dt, datetime):
-                    expiry_dt = datetime.combine(expiry_dt, datetime.min.time(), tzinfo=timezone.utc)
-                if isinstance(expiry_dt, datetime):
-                    if getattr(expiry_dt, 'tzinfo', None) is None:
-                        expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
-                    else:
-                        expiry_dt = expiry_dt.astimezone(timezone.utc)
-                    # Calculate days until expiry
-                    days_until_expiry = (expiry_dt - today).days
-                
-                if days_until_expiry <= 3:
-                    expiring_ingredients.append(item.item_name)
-                    # Higher urgency for items expiring sooner
-                    if days_until_expiry <= 0:
-                        urgency_score += 10  # Expired
-                    elif days_until_expiry == 1:
-                        urgency_score += 8   # Expires tomorrow
-                    elif days_until_expiry == 2:
-                        urgency_score += 5   # Expires in 2 days
-                    else:
-                        urgency_score += 3   # Expires in 3 days
-                break
+            name_lower = item.item_name.lower()
+            if ingredient_lower in name_lower or name_lower in ingredient_lower:
+                expiry_dt = _norm_dt(item.expiry_date)
+                if expiry_dt is not None:
+                    candidate_days.append((expiry_dt - today).days)
+                    matched_names.append(item.item_name)
+
+        if not candidate_days:
+            continue
+
+        # Use the earliest expiry among matches for urgency scoring
+        min_days = min(candidate_days)
+        # Record unique names that are within urgency window
+        if min_days <= 3:
+            # Add unique item names
+            for n in matched_names:
+                if n not in expiring_ingredients:
+                    expiring_ingredients.append(n)
+            if min_days <= 0:
+                urgency_score += 10
+            elif min_days == 1:
+                urgency_score += 8
+            elif min_days == 2:
+                urgency_score += 5
+            else:
+                urgency_score += 3
     
     return urgency_score, expiring_ingredients
 

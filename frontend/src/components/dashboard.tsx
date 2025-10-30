@@ -277,10 +277,24 @@ export default function Dashboard() {
     setInventory(updatedInventory);
     setSelectedRecipe(null);
 
-    // Refresh cooked history after a successful cook action
+    // Refresh cooked history and inventory from server after a successful cook action
     if (user?.id) {
       // Don't await to keep UI snappy; background refresh is fine
       fetchCooked(user.id);
+      getInventory(user.id)
+        .then((apiInventory) => {
+          const formInventory: InventoryFormItem[] = apiInventory.map(item => ({
+            id: item.id,
+            name: item.item_name,
+            quantity: item.quantity,
+            unit: item.unit,
+            purchaseDate: item.added_at,
+            expiryDate: item.expiry_date,
+            shelfLife: 7,
+          }));
+          setInventory(formInventory);
+        })
+        .catch(() => {/* ignore background refresh errors */});
     }
   };
 

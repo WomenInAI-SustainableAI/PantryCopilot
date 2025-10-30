@@ -85,7 +85,15 @@ async def get_personalized_recommendations(
     
     # 5. Extract ingredient names
     ingredient_names = [item.item_name for item in inventory]
-    expiring_names = [item.item_name for item in expiring_items]
+    # Deduplicate expiring names to reduce duplicate searches
+    expiring_names = []
+    seen_names = set()
+    for item in expiring_items:
+        name = (item.item_name or "").strip()
+        key = name.lower()
+        if name and key not in seen_names:
+            seen_names.add(key)
+            expiring_names.append(name)
     allergen_names = [allergy.allergen for allergy in allergies]
 
     # Expand category-style allergens like "dairy" into concrete ingredient terms

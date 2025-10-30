@@ -124,25 +124,65 @@ def subtract_inventory_items(
         # 3) No match
         return None
 
+    def _match_all_inventory(ing_name: str) -> List[InventoryItem]:
+        """Return all matching inventory items for an ingredient name.
+
+        Matching rules mirror _match_inventory but return a list, sorted by earliest expiry first.
+        """
+        ing_norm = _norm(ing_name)
+        ing_tokens = _tokenize(ing_name)
+        matches: List[InventoryItem] = []
+        # Exact matches first
+        for it in inventory:
+            if _norm(it.item_name) == ing_norm:
+                matches.append(it)
+        # Multi-word subset matches next (avoid single-token false positives)
+        if len(ing_tokens) >= 2:
+            ing_set = set(ing_tokens)
+            for it in inventory:
+                if _norm(it.item_name) == ing_norm:
+                    continue  # already added
+                inv_tokens = set(_tokenize(it.item_name))
+                if ing_set.issubset(inv_tokens):
+                    matches.append(it)
+        # Sort by expiry (earliest first), then by quantity ascending as tiebreaker
+        def _expiry_key(it: InventoryItem):
+            dt = it.expiry_date
+            from datetime import datetime, timezone, date
+            if isinstance(dt, date) and not isinstance(dt, datetime):
+                dt = datetime.combine(dt, datetime.min.time(), tzinfo=timezone.utc)
+            if getattr(dt, 'tzinfo', None) is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        matches.sort(key=lambda it: (_expiry_key(it), it.quantity))
+        return matches
+
     for ingredient_name, quantity_used in recipe_ingredients.items():
-        # Find matching inventory item using stricter rules to avoid false positives like
-        # 'butter' matching 'peanut butter'
-        matching_item = _match_inventory(ingredient_name)
-        
-        if matching_item:
-            new_quantity = matching_item.quantity - quantity_used
-            
-            if new_quantity <= 0:
-                # Delete item if quantity is 0 or less
-                delete_inventory_item(user_id, matching_item.id)
-                results[ingredient_name] = "deleted (quantity depleted)"
-            else:
-                # Update quantity
-                update_data = InventoryItemUpdate(quantity=new_quantity)
-                update_inventory_item(user_id, matching_item.id, update_data)
-                results[ingredient_name] = f"updated (new quantity: {new_quantity})"
-        else:
+        # Find ALL matching inventory items; consume oldest first
+        matches = _match_all_inventory(ingredient_name)
+        if not matches:
             results[ingredient_name] = "not found in inventory"
+            continue
+
+        remaining = float(quantity_used or 0)
+        updates: List[str] = []
+        for it in matches:
+            if remaining <= 0:
+                break
+            take = min(it.quantity, remaining)
+            new_qty = it.quantity - take
+            if new_qty <= 0:
+                delete_inventory_item(user_id, it.id)
+                updates.append(f"deleted {it.item_name} ({take:g} used)")
+            else:
+                update_data = InventoryItemUpdate(quantity=new_qty)
+                update_inventory_item(user_id, it.id, update_data)
+                updates.append(f"updated {it.item_name} (new qty: {new_qty:g})")
+            remaining -= take
+
+        if remaining > 0:
+            updates.append(f"missing {remaining:g}")
+        results[ingredient_name] = "; ".join(updates)
     
     return results
 
