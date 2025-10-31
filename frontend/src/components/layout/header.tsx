@@ -23,10 +23,11 @@ interface HeaderProps {
 export default function Header({ settings, onUpdateSettings }: HeaderProps) {
   const { user, logout } = useAuth();
 
-  const defaultSettings: UserSettings = {
-    userId: user?.id || '',
-    name: user?.name || '',
-    email: user?.email || '',
+  // Merge persisted settings with auth profile as fallback for display and dialog defaults
+  const mergedSettings: UserSettings = {
+    userId: settings?.userId || user?.id || '',
+    name: (settings?.name && settings.name.trim()) ? settings.name : (user?.name || ''),
+    email: (settings?.email && settings.email.trim()) ? settings.email : (user?.email || ''),
   };
 
   return (
@@ -47,25 +48,14 @@ export default function Header({ settings, onUpdateSettings }: HeaderProps) {
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>{user?.name || 'My Account'}</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            {settings && onUpdateSettings ? (
-              <UserSettingsDialog
-                settings={settings}
-                onUpdateSettings={onUpdateSettings}
-              >
-                <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
-                  Settings
-                </DropdownMenuItem>
-              </UserSettingsDialog>
-            ) : (
-              <UserSettingsDialog
-                settings={defaultSettings}
-                onUpdateSettings={() => {}}
-              >
-                <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
-                  Settings
-                </DropdownMenuItem>
-              </UserSettingsDialog>
-            )}
+            <UserSettingsDialog
+              settings={mergedSettings}
+              onUpdateSettings={onUpdateSettings || (() => {})}
+            >
+              <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                Settings
+              </DropdownMenuItem>
+            </UserSettingsDialog>
             <DropdownMenuItem>Support</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={logout}>Logout</DropdownMenuItem>

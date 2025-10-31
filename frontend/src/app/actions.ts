@@ -266,17 +266,47 @@ export async function deleteInventoryItem(userId: string, itemId: string): Promi
 export async function getUserPreferences(userId: string): Promise<UserPreferences> {
     const response = await fetch(`${API_BASE}/api/users/${userId}/preferences`)
     if (!response.ok) throw new Error('Failed to fetch user preferences')
-    return response.json()
+    const data = await response.json()
+    // Normalize snake_case from API to camelCase expected by the app
+    const normalized: UserPreferences = {
+        userId: data?.userId || userId,
+        allergies: Array.isArray(data?.allergies) ? data.allergies : [],
+        dislikes: Array.isArray(data?.dislikes) ? data.dislikes : [],
+        dietaryRestrictions: Array.isArray(data?.dietary_restrictions) ? data.dietary_restrictions : (Array.isArray(data?.dietaryRestrictions) ? data.dietaryRestrictions : []),
+        preferredCuisines: Array.isArray(data?.preferred_cuisines) ? data.preferred_cuisines : (Array.isArray(data?.preferredCuisines) ? data.preferredCuisines : []),
+        cookingSkillLevel: (data?.cooking_skill_level || data?.cookingSkillLevel || undefined) as any,
+    }
+    return normalized
 }
 
 export async function updateUserPreferences(userId: string, preferences: Partial<UserPreferences>): Promise<UserPreferences> {
+    // Map camelCase to snake_case expected by backend
+    const payload: any = {
+        allergies: preferences.allergies ?? [],
+        dislikes: preferences.dislikes ?? [],
+        dietary_restrictions: preferences.dietaryRestrictions ?? [],
+        preferred_cuisines: preferences.preferredCuisines ?? [],
+    }
+    if (preferences.cookingSkillLevel !== undefined) {
+        payload.cooking_skill_level = preferences.cookingSkillLevel
+    }
     const response = await fetch(`${API_BASE}/api/users/${userId}/preferences`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(preferences)
+        body: JSON.stringify(payload)
     })
     if (!response.ok) throw new Error('Failed to update user preferences')
-    return response.json()
+    const data = await response.json()
+    // Return normalized shape
+    const normalized: UserPreferences = {
+        userId: data?.userId || userId,
+        allergies: Array.isArray(data?.allergies) ? data.allergies : [],
+        dislikes: Array.isArray(data?.dislikes) ? data.dislikes : [],
+        dietaryRestrictions: Array.isArray(data?.dietary_restrictions) ? data.dietary_restrictions : [],
+        preferredCuisines: Array.isArray(data?.preferred_cuisines) ? data.preferred_cuisines : [],
+        cookingSkillLevel: (data?.cooking_skill_level || undefined) as any,
+    }
+    return normalized
 }
 
 export async function getUserSettings(userId: string): Promise<UserSettings> {

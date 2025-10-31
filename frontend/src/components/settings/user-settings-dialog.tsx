@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -27,8 +27,15 @@ export default function UserSettingsDialog({
   onUpdateSettings,
 }: UserSettingsDialogProps) {
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState(settings.name || "");
-  const [email, setEmail] = useState(settings.email || "");
+  const [name, setName] = useState(settings?.name || "");
+  const [email, setEmail] = useState(settings?.email || "");
+
+  // Sync fields when dialog opens or when settings prop changes (e.g., after logout/login)
+  useEffect(() => {
+    if (!open) return;
+    setName(settings?.name || "");
+    setEmail(settings?.email || "");
+  }, [open, settings]);
 
   const handleSave = async () => {
     const newSettings: UserSettings = {

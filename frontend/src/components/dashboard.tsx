@@ -31,7 +31,7 @@ import {
 import { getApiBaseUrl } from "@/lib/config";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { getAllCategories, classifyRecipeCategory } from "@/lib/categories";
+import { getAllCategories } from "@/lib/categories";
  
 
 export default function Dashboard() {
@@ -48,7 +48,8 @@ export default function Dashboard() {
   const [loadingRecommendations, setLoadingRecommendations] = useState<boolean>(false);
   const [selectedCategory, setSelectedCategory] = useState<string>("");
   const [selectedLimit, setSelectedLimit] = useState<number>(3);
-  const initialLoadCompleteRef = React.useRef<boolean>(false);
+  // Track which user we've loaded data for; reload on user change
+  const lastLoadedUserIdRef = React.useRef<string | null>(null);
 
   // Expired items popup state
   const [removedExpired, setRemovedExpired] = useState<InventoryFormItem[]>([]);
@@ -124,7 +125,16 @@ export default function Dashboard() {
             const { normalizeRecipe } = await import("@/lib/normalize-recipe");
             // When using filtered endpoint, backend already honored category; avoid double-filtering to prevent empty state
             const normalized = list.map((r: any) => normalizeRecipe(r));
-            setRecipes(normalized as any);
+            // Deduplicate by id/title to avoid React duplicate key warnings when backend returns duplicates
+            const seen = new Set<string>();
+            const deduped = normalized.filter((r: any) => {
+              const key = String(r?.id ?? r?.title ?? "");
+              if (!key) return true; // keep items without a key (we'll index their keys when rendering)
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+            setRecipes(deduped as any);
           } else {
             setRecipes([]);
           }
@@ -163,17 +173,20 @@ export default function Dashboard() {
     setInventory(newInventory);
   };
 
-  // Load inventory and recommendations from API (initial load only)
+  // Load inventory and recommendations from API (per user change)
   React.useEffect(() => {
     const loadData = async () => {
-      // Avoid reruns after initial load; subsequent changes use the debounced effect
-      if (initialLoadCompleteRef.current) return;
       if (!user) {
-        // Not logged in: no frontend mocks; show empty state
+        // Not logged in: clear state
         setRecipes([]);
-        initialLoadCompleteRef.current = true;
+        setInventory([]);
+        setUserPreferences(initialUser);
+        setUserSettings({ userId: "", name: "", email: "" });
+        lastLoadedUserIdRef.current = null;
         return;
       }
+      // Skip if we've already loaded for this user id
+      if (lastLoadedUserIdRef.current === user.id) return;
       
       try {
         // Load inventory
@@ -226,7 +239,7 @@ export default function Dashboard() {
         setRecipes([]);
       } finally {
         setLoadingRecommendations(false);
-        initialLoadCompleteRef.current = true;
+        lastLoadedUserIdRef.current = user.id;
       }
     };
     loadData();
@@ -319,8 +332,7 @@ export default function Dashboard() {
 
   // Re-fetch recommendations when inventory or preferences change (debounced)
   React.useEffect(() => {
-    if (!initialLoadCompleteRef.current) return;
-    if (!user) return;
+    if (!user || lastLoadedUserIdRef.current !== user.id) return;
     // Immediately indicate loading to prevent empty-state flash during debounce
     setLoadingRecommendations(true);
     const handle = setTimeout(() => {
@@ -330,7 +342,7 @@ export default function Dashboard() {
     return () => clearTimeout(handle);
   }, [inventory, userPreferences, selectedCategory, selectedLimit, user, fetchRecommendations]);
 
-  // Load preferences and settings from API on mount
+  // Load preferences and settings from API when user changes
   React.useEffect(() => {
     const loadData = async () => {
       if (!user) return;
@@ -341,8 +353,9 @@ export default function Dashboard() {
           getUserPreferences(user.id),
           getUserSettings(user.id)
         ]);
-        setUserPreferences(savedPreferences);
-        setUserSettings(savedSettings);
+        // Ensure userId is populated in local state even if API omits it
+        setUserPreferences({ userId: user.id, ...savedPreferences });
+        setUserSettings({ userId: user.id, ...savedSettings });
       } catch (error) {
         console.error('Failed to load user data:', error);
       }
@@ -501,9 +514,14 @@ export default function Dashboard() {
         }
       });
       
-      const matchPercentage = totalPossibleWeight > 0 ? (weightedMatchSum / totalPossibleWeight) * 100 : 0;
-      const expiringIngredientBonus = expiringMatches * 10;
-      const score = matchPercentage + expiringIngredientBonus;
+  const matchPercentage = totalPossibleWeight > 0 ? (weightedMatchSum / totalPossibleWeight) * 100 : 0;
+  const expiringIngredientBonus = expiringMatches * 10;
+  // Soft-boost recipes that match user's preferred cuisines when no category filter is applied
+  const preferredCuisines = new Set((userPreferences.preferredCuisines || []).map((c) => String(c).toLowerCase()));
+  const recipeCuisines = ((recipe as any)?.cuisines || []).map((c: any) => String(c).toLowerCase());
+  const cuisineOverlap = recipeCuisines.filter((c: string) => preferredCuisines.has(c)).length;
+  const cuisinePreferenceBonus = cuisineOverlap > 0 ? Math.min(2, cuisineOverlap) * 12 : 0; // cap at 24
+  const score = matchPercentage + expiringIngredientBonus + cuisinePreferenceBonus;
 
       
 
@@ -620,9 +638,9 @@ export default function Dashboard() {
                 )}
                 {selectedCategory ? (
                   recommendedRecipes.length > 0 ? (
-                    recommendedRecipes.slice(0, Math.max(1, Number(selectedLimit) || 3)).map((recipe) => (
+                    recommendedRecipes.slice(0, Math.max(1, Number(selectedLimit) || 3)).map((recipe, idx) => (
                       <RecipeCard
-                        key={recipe.id}
+                          key={`rec-${String((recipe as any)?.id ?? 'noid')}-${idx}`}
                         recipe={recipe}
                         onSelectRecipe={setSelectedRecipe}
                       />
@@ -635,17 +653,17 @@ export default function Dashboard() {
                     </div>
                   ) : null
                 ) : recommendedRecipes.length > 0 ? (
-                  recommendedRecipes.slice(0, Math.max(1, Number(selectedLimit) || 3)).map((recipe) => (
+                  recommendedRecipes.slice(0, Math.max(1, Number(selectedLimit) || 3)).map((recipe, idx) => (
                     <RecipeCard
-                      key={recipe.id}
+                      key={`rec-${String((recipe as any)?.id ?? 'noid')}-${idx}`}
                       recipe={recipe}
                       onSelectRecipe={setSelectedRecipe}
                     />
                   ))
                 ) : recipes.length > 0 ? (
-                  recipes.slice(0, Math.max(1, Number(selectedLimit) || 3)).map((recipe) => (
+                  recipes.slice(0, Math.max(1, Number(selectedLimit) || 3)).map((recipe, idx) => (
                     <RecipeCard
-                      key={recipe.id}
+                      key={`recbase-${String((recipe as any)?.id ?? 'noid')}-${idx}`}
                       recipe={recipe}
                       onSelectRecipe={setSelectedRecipe}
                     />
