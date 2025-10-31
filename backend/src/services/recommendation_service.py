@@ -12,7 +12,7 @@ from src.db.crud import (
     create_recommendation
 )
 from src.db.crud.cmab import CMABCRUD
-from src.db.models import RecipeRecommendationCreate
+from src.db.models import RecipeRecommendationCreate, Allergy
 from src.services.spoonacular_service import (
     search_recipes_by_ingredients,
     get_recipe_information,
@@ -58,7 +58,30 @@ async def get_personalized_recommendations(
     """
     # 1. Get user data
     inventory = get_user_inventory(user_id)
+    # Merge allergies from the dedicated allergies subcollection and user preferences
     allergies = get_user_allergies(user_id)
+    try:
+        from src.db.firestore import db  # local import to avoid hard dependency at module load
+        doc = (
+            db.collection("users").document(user_id)
+            .collection("preferences").document("settings")
+            .get()
+        )
+        if doc.exists:
+            prefs = doc.to_dict() or {}
+            pref_allergies = [
+                str(a).strip().lower()
+                for a in (prefs.get("allergies") or [])
+                if isinstance(a, str)
+            ]
+            existing = {str(getattr(a, "allergen", "")).strip().lower() for a in allergies}
+            for s in pref_allergies:
+                if s and s not in existing:
+                    # Create a lightweight Allergy model entry for scoring/filtering
+                    allergies.append(Allergy(id=f"pref:{s}", user_id=user_id, allergen=s))
+    except Exception as e:
+        # Non-fatal: continue with whatever we have
+        print(f"Warning: failed to merge preferences allergies: {e}")
     expiring_items = get_expiring_soon(user_id, days=3)
     use_mock = os.getenv("USE_MOCK_RECOMMENDATIONS", "false").lower() == "true"
     
@@ -198,6 +221,13 @@ async def get_personalized_recommendations(
             'lupin': ['lupin','lupine','lupine flour'],
             'sulfite': ['sulfite','sulfites','sulphite','sulphites','sulfur dioxide','e220','e221','e222','e223','e224','e225','e226','e227','e228'],
             'egg': ['egg','eggs','albumen'],
+            # Include broad beans/legumes to match scoring layer
+            'beans': [
+                'bean','beans','legume','legumes','chickpea','chickpeas','garbanzo','garbanzo beans','lentil','lentils',
+                'kidney bean','kidney beans','black bean','black beans','pinto bean','pinto beans','cannellini','cannellini beans',
+                'navy bean','navy beans','red bean','red beans','mung bean','mung beans','fava bean','fava beans','broad bean','broad beans',
+                'pea','peas','split pea','split peas','edamame','soybean','soybeans'
+            ],
         }
         out: List[str] = []
         for t in terms:
@@ -470,7 +500,28 @@ async def get_recommendations_by_preferences(
     """
     # Get user data
     inventory = get_user_inventory(user_id)
+    # Merge allergies from the dedicated allergies subcollection and user preferences
     allergies = get_user_allergies(user_id)
+    try:
+        from src.db.firestore import db  # local import to avoid hard dependency at module load
+        doc = (
+            db.collection("users").document(user_id)
+            .collection("preferences").document("settings")
+            .get()
+        )
+        if doc.exists:
+            prefs = doc.to_dict() or {}
+            pref_allergies = [
+                str(a).strip().lower()
+                for a in (prefs.get("allergies") or [])
+                if isinstance(a, str)
+            ]
+            existing = {str(getattr(a, "allergen", "")).strip().lower() for a in allergies}
+            for s in pref_allergies:
+                if s and s not in existing:
+                    allergies.append(Allergy(id=f"pref:{s}", user_id=user_id, allergen=s))
+    except Exception as e:
+        print(f"Warning: failed to merge preferences allergies: {e}")
     
     if not inventory:
         return []
@@ -504,6 +555,13 @@ async def get_recommendations_by_preferences(
             'lupin': ['lupin','lupine','lupine flour'],
             'sulfite': ['sulfite','sulfites','sulphite','sulphites','sulfur dioxide','e220','e221','e222','e223','e224','e225','e226','e227','e228'],
             'egg': ['egg','eggs','albumen'],
+            # Match scoring layer beans/legumes mapping for external API exclusion
+            'beans': [
+                'bean','beans','legume','legumes','chickpea','chickpeas','garbanzo','garbanzo beans','lentil','lentils',
+                'kidney bean','kidney beans','black bean','black beans','pinto bean','pinto beans','cannellini','cannellini beans',
+                'navy bean','navy beans','red bean','red beans','mung bean','mung beans','fava bean','fava beans','broad bean','broad beans',
+                'pea','peas','split pea','split peas','edamame','soybean','soybeans'
+            ],
         }
         out: List[str] = []
         for t in terms:
