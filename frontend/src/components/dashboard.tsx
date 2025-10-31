@@ -32,7 +32,6 @@ import { getApiBaseUrl } from "@/lib/config";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { getAllCategories, classifyRecipeCategory } from "@/lib/categories";
-import { pickMockRecommendationsByCategory } from "@/lib/mock-data";
  
 
 export default function Dashboard() {
@@ -96,7 +95,7 @@ export default function Dashboard() {
   };
   const makeAckKey = (it: InventoryFormItem) => `${it.id}|${toUtcEpochMs(it.expiryDate)}`;
 
-  // Fetch recommendations (API first, fallback to mock; apply category locally to avoid flicker)
+  // Fetch recommendations from backend (backend handles any mock fallback)
   const fetchRecommendations = React.useCallback(
     async (uid: string, opts?: { category?: string; limit?: number }) => {
       setLoadingRecommendations(true);
@@ -104,52 +103,37 @@ export default function Dashboard() {
         const category = (opts?.category || "").trim();
         const limit = Math.max(1, Number(opts?.limit || selectedLimit) || 3);
         const base = getApiBaseUrl();
-        // Always hit the generic personalized endpoint; apply CMAB category filter client-side
-        const url = `${base}/users/${uid}/recommendations?limit=${encodeURIComponent(String(limit))}`;
+        // If a category is selected, prefer server-side filtered endpoint (so backend mock/live can honor it)
+        let url = `${base}/users/${uid}/recommendations?limit=${encodeURIComponent(String(limit))}`;
+        if (category) {
+          const lower = category.toLowerCase();
+          const cuisines = new Set(["italian","asian","mexican","american","mediterranean","indian","greek","french"]);
+          const dishTypes = new Set(["breakfast","dessert","soup","salad","baking","lunch","dinner","quick","snack","appetizer","main course"]);
+          const params = new URLSearchParams();
+          params.set("limit", String(limit));
+          if (cuisines.has(lower)) params.set("cuisine", lower);
+          else if (dishTypes.has(lower)) params.set("dish_type", lower);
+          else params.set("dish_type", lower); // map other categories (vegan, vegetarian, healthy) to dish_type for mock classification
+          url = `${base}/users/${uid}/recommendations/filtered?${params.toString()}`;
+        }
         const response = await fetch(url);
         if (response.ok) {
           const data = await response.json();
           const list = data?.recommendations || [];
           if (list.length > 0) {
             const { normalizeRecipe } = await import("@/lib/normalize-recipe");
-            let normalized = list.map((r: any) => normalizeRecipe(r));
-            if (category) {
-              const cat = category.toLowerCase();
-              normalized = normalized.filter((r: any) => {
-                const tags: string[] = [
-                  ...((r?.dishTypes || []) as string[]),
-                  ...((r?.cuisines || []) as string[]),
-                ].filter(Boolean);
-                const cats = classifyRecipeCategory(String(r?.title || ""), tags);
-                return cats.map(String).includes(cat);
-              });
-            }
-            if (category && normalized.length === 0) {
-              // Category-filtered API returned none; fill with mock picks for a better UX
-              const picked = pickMockRecommendationsByCategory(category, limit);
-              const mockNorm = picked.map((r: any) => normalizeRecipe(r));
-              setRecipes(mockNorm as any);
-            } else {
-              setRecipes(normalized as any);
-            }
-          } else {
-            const { normalizeRecipe } = await import("@/lib/normalize-recipe");
-            const picked = pickMockRecommendationsByCategory(category, limit);
-            const normalized = picked.map((r: any) => normalizeRecipe(r));
+            // When using filtered endpoint, backend already honored category; avoid double-filtering to prevent empty state
+            const normalized = list.map((r: any) => normalizeRecipe(r));
             setRecipes(normalized as any);
+          } else {
+            setRecipes([]);
           }
         } else {
-          const { normalizeRecipe } = await import("@/lib/normalize-recipe");
-          const picked = pickMockRecommendationsByCategory(category, limit);
-          const normalized = picked.map((r: any) => normalizeRecipe(r));
-          setRecipes(normalized as any);
+          setRecipes([]);
         }
       } catch (error) {
         console.error('Failed to load recommendations:', error);
-        const { normalizeRecipe } = await import("@/lib/normalize-recipe");
-        const picked = pickMockRecommendationsByCategory(opts?.category || selectedCategory, Math.max(1, Number(selectedLimit) || 3));
-        const normalized = picked.map((r: any) => normalizeRecipe(r));
-        setRecipes(normalized as any);
+        setRecipes([]);
       } finally {
         setLoadingRecommendations(false);
       }
@@ -185,21 +169,9 @@ export default function Dashboard() {
       // Avoid reruns after initial load; subsequent changes use the debounced effect
       if (initialLoadCompleteRef.current) return;
       if (!user) {
-        // Not logged in: show mock recommendations immediately based on current category/limit
-        try {
-          setLoadingRecommendations(true);
-          const { normalizeRecipe } = await import("@/lib/normalize-recipe");
-          const catParam = (selectedCategory || "").toLowerCase() === "general" ? "" : selectedCategory;
-          const picked = pickMockRecommendationsByCategory(catParam, selectedLimit);
-          const normalized = picked.map((r: any) => normalizeRecipe(r));
-          setRecipes(normalized as any);
-        } catch (e) {
-          console.error('Failed to load mock recommendations (no user):', e);
-          setRecipes([]);
-        } finally {
-          setLoadingRecommendations(false);
-          initialLoadCompleteRef.current = true;
-        }
+        // Not logged in: no frontend mocks; show empty state
+        setRecipes([]);
+        initialLoadCompleteRef.current = true;
         return;
       }
       
@@ -348,25 +320,7 @@ export default function Dashboard() {
   // Re-fetch recommendations when inventory or preferences change (debounced)
   React.useEffect(() => {
     if (!initialLoadCompleteRef.current) return;
-    if (!user) {
-      // Update mock recommendations when filters change and user is not logged in
-      // Immediately indicate loading to prevent empty-state flash during debounce
-      setLoadingRecommendations(true);
-      const handle = setTimeout(async () => {
-        try {
-          const { normalizeRecipe } = await import("@/lib/normalize-recipe");
-          const catParam = (selectedCategory || "").toLowerCase() === "general" ? "" : selectedCategory;
-          const picked = pickMockRecommendationsByCategory(catParam, selectedLimit);
-          const normalized = picked.map((r: any) => normalizeRecipe(r));
-          setRecipes(normalized as any);
-        } catch (e) {
-          setRecipes([]);
-        } finally {
-          setLoadingRecommendations(false);
-        }
-      }, 300);
-      return () => clearTimeout(handle);
-    }
+    if (!user) return;
     // Immediately indicate loading to prevent empty-state flash during debounce
     setLoadingRecommendations(true);
     const handle = setTimeout(() => {
@@ -476,6 +430,36 @@ export default function Dashboard() {
 
     
 
+    // Unit conversion helpers for better match% (e.g., 3 kg inventory vs 300 g recipe)
+    const massUnits: Record<string, number> = { g: 1, gram: 1, grams: 1, kg: 1000, kilogram: 1000, kilograms: 1000, mg: 0.001, milligram: 0.001, milligrams: 0.001 };
+    const volumeUnits: Record<string, number> = { ml: 1, milliliter: 1, milliliters: 1, l: 1000, liter: 1000, liters: 1000 };
+    const pieceUnits = new Set(["", "piece", "pieces", "pc", "pcs", "count"]);
+    const toMassG = (qty: number, unit?: string): number | null => {
+      const u = String(unit || '').toLowerCase();
+      if (u in massUnits) return qty * massUnits[u];
+      return null;
+    };
+    const toVolumeML = (qty: number, unit?: string): number | null => {
+      const u = String(unit || '').toLowerCase();
+      if (u in volumeUnits) return qty * volumeUnits[u];
+      return null;
+    };
+    const sameDimensionRatio = (reqQty: number, reqUnit: string | undefined, invQty: number, invUnit: string | undefined): number | null => {
+      // Try mass
+      const rMass = toMassG(reqQty, reqUnit);
+      const iMass = toMassG(invQty, invUnit);
+      if (rMass !== null && iMass !== null) return rMass > 0 ? Math.min(iMass / rMass, 1) : 1;
+      // Try volume
+      const rVol = toVolumeML(reqQty, reqUnit);
+      const iVol = toVolumeML(invQty, invUnit);
+      if (rVol !== null && iVol !== null) return rVol > 0 ? Math.min(iVol / rVol, 1) : 1;
+      // Pieces: if both are piece-like, compare directly
+      if (pieceUnits.has(String(reqUnit || '').toLowerCase()) && pieceUnits.has(String(invUnit || '').toLowerCase())) {
+        return reqQty > 0 ? Math.min(invQty / reqQty, 1) : 1;
+      }
+      return null;
+    };
+
     const updatedRecipes = recipes.map(recipe => {
       let weightedMatchSum = 0;
       let expiringMatches = 0;
@@ -497,9 +481,16 @@ export default function Dashboard() {
         const hasNumericQty = typeof ingredient === "object" && ingredient !== null && (ingredient as any).quantity !== undefined;
         if (inventoryItem && hasNumericQty) {
           const recipeQty = Number((ingredient as any).quantity || 0);
-          // avoid division by zero
-          const quantityRatio = recipeQty > 0 ? Math.min(inventoryItem.quantity / recipeQty, 1.0) : 1.0;
+          const recipeUnit = String((ingredient as any)?.unit || '');
+          const invQty = Number(inventoryItem.quantity || 0);
+          const invUnit = String(inventoryItem.unit || '');
+          // Try to compare using unit conversions; if not comparable, fall back to presence-based match
+          const ratio = sameDimensionRatio(recipeQty, recipeUnit, invQty, invUnit);
+          const quantityRatio = ratio === null ? 1.0 : ratio;
           weightedMatchSum += quantityRatio * weight;
+        } else if (inventoryItem) {
+          // No numeric qty on ingredient; treat presence as a full match
+          weightedMatchSum += 1.0 * weight;
         }
 
         // Expiring match: count any ingredient that exists in inventory and is expiring soon,
@@ -537,18 +528,8 @@ export default function Dashboard() {
         return !hasAllergens && !hasDislikes;
     });
 
-    // Apply CMAB category filter locally for instant UI response and consistent mock/API behavior
-    const afterCategory = (() => {
-      const c = (selectedCategory || "").toLowerCase();
-      if (!c || c === "general") return filteredRecipes;
-      return filteredRecipes.filter((r) => {
-        const cats = ((r as any)?.categories as string[] | undefined) || classifyRecipeCategory(String((r as any)?.title || ""), [
-          ...((((r as any) ?? {})?.dishTypes || []) as string[]),
-          ...((((r as any) ?? {})?.cuisines || []) as string[]),
-        ].filter(Boolean));
-        return cats.map(String).includes(c);
-      });
-    })();
+    // Rely on backend to honor category filtering; avoid double-filtering here to prevent empty UI when tags differ
+    const afterCategory = filteredRecipes;
 
     return afterCategory.sort((a, b) => b.score - a.score);
   }, [recipes, inventory, userPreferences, expiringSoonItems, selectedCategory]);
