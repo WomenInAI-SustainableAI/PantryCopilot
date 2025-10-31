@@ -591,5 +591,12 @@ async def get_recommendations_by_preferences(
         user_allergies=allergies,
         feedback_scores=feedback_scores
     )
+    # Ensure we only return allergen-safe recipes in preferences endpoint as well
+    safe_ranked = []
+    for r in ranked_recipes:
+        scoring = r.get("scoring", {}) if isinstance(r, dict) else {}
+        if scoring.get("is_allergen_safe", True):
+            safe_ranked.append(r)
+        # else: drop unsafe
     
-    return ranked_recipes[:number_of_recipes]
+    return safe_ranked[:number_of_recipes]
