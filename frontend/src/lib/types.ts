@@ -48,6 +48,8 @@ export interface Recipe {
   matchPercentage?: number;
   expiringIngredientsCount?: number;
   score?: number;
+  // CMAB categories computed client-side to align with backend RecipeCategory
+  categories?: string[];
 }
 
 // Normalized recipe shape used by the frontend after converting Spoonacular payloads

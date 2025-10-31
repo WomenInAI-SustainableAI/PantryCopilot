@@ -97,6 +97,7 @@ function sanitizeHtml(dirty: string): string {
   return container.innerHTML;
 }
 import { differenceInDays } from "date-fns";
+import { classifyRecipeCategory } from "@/lib/categories";
 
 interface RecipeDetailsProps {
   recipe: Recipe;
@@ -299,10 +300,15 @@ export default function RecipeDetails({
       feedbackType: sendingType,
       userId: userPreferences.userId,
       recipeTitle: normalized.title,
-      recipeCategories: [
-        ...((recipe as any)?.dishTypes || []),
-        ...((recipe as any)?.cuisines || []),
-      ].filter(Boolean),
+      recipeCategories: Array.isArray((normalized as any)?.categories)
+        ? ((normalized as any).categories as string[])
+        : classifyRecipeCategory(
+            normalized.title,
+            [
+              ...(((recipe as any)?.dishTypes || []) as string[]),
+              ...(((recipe as any)?.cuisines || []) as string[]),
+            ].filter(Boolean)
+          ),
     });
 
     toast({

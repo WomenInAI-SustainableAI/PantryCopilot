@@ -303,6 +303,54 @@ async def add_expired_ack(user_id: str, payload: ExpiredAckPayload):
         return {"ok": False}
 
 
+# Bulk consume inventory (user cooked outside the app)
+class BulkConsumeItem(BaseModel):
+    name: str = Field(..., description="Ingredient name as listed in inventory")
+    quantity: float = Field(..., gt=0, description="Amount to subtract from inventory")
+    unit: Optional[str] = Field(None, description="Unit of measurement (e.g., g, kg, ml, l, piece)")
+
+
+class BulkConsumeRequest(BaseModel):
+    items: List[BulkConsumeItem] = Field(default_factory=list)
+
+
+@app.post("/api/users/{user_id}/inventory/bulk-consume")
+async def bulk_consume_inventory(user_id: str, payload: BulkConsumeRequest):
+    """
+    Subtract multiple ingredients from inventory in one request.
+
+    Accepts a list of { name, quantity, unit } and performs unit-aware, oldest-first
+    subtraction using the same logic as the cooked endpoint.
+    """
+    try:
+        if not payload.items:
+            return {"ok": True, "inventory_updates": {}, "message": "No items provided"}
+
+        ingredient_quantities: Dict[str, float] = {}
+        ingredient_units: Dict[str, str] = {}
+        for it in payload.items:
+            n = (it.name or "").strip()
+            q = float(it.quantity or 0)
+            if not n or q <= 0:
+                continue
+            ingredient_quantities[n] = (ingredient_quantities.get(n, 0.0) + q)
+            if it.unit:
+                ingredient_units[n] = it.unit
+
+        if not ingredient_quantities:
+            return {"ok": True, "inventory_updates": {}, "message": "No valid items to consume"}
+
+        results = subtract_inventory_items(user_id, ingredient_quantities, ingredient_units)
+        return {
+            "ok": True,
+            "inventory_updates": results,
+            "message": "Bulk consumption applied",
+        }
+    except Exception as e:
+        print(f"Error in bulk consumption: {e}")
+        raise HTTPException(status_code=500, detail="Failed to apply bulk consumption")
+
+
 @app.put("/api/users/{user_id}/inventory/{item_id}", response_model=InventoryItem)
 async def update_inventory(
     user_id: str,

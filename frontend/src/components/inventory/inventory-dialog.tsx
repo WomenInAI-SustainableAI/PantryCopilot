@@ -34,7 +34,8 @@ import { getExpiryInfo } from "@/lib/expiry";
 import { Badge } from "../ui/badge";
 import { PlusCircle, Trash2, Edit, Info } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { addInventoryItem, deleteInventoryItem, updateInventoryItem, getExpiredInventory } from "@/app/actions";
+import { addInventoryItem, deleteInventoryItem, updateInventoryItem, getExpiredInventory, bulkConsumeInventory, getInventory } from "@/app/actions";
+import { AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useAuth } from "@/lib/auth";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -61,6 +62,37 @@ export default function InventoryDialog({
     shelfLife: "",
   });
   const [customUnit, setCustomUnit] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkRows, setBulkRows] = useState<Array<{ name: string; quantity: string; unit: string }>>([
+    { name: "", quantity: "", unit: "g" },
+  ]);
+  const [bulkSummaryOpen, setBulkSummaryOpen] = useState(false);
+  type BulkSummaryItem =
+    | { type: 'quantity'; name: string; oldQty: number; newQty: number; unit: string }
+    | { type: 'status'; name: string; status: string };
+  const [bulkSummaryItems, setBulkSummaryItems] = useState<BulkSummaryItem[]>([]);
+  const [bulkSummaryNote, setBulkSummaryNote] = useState<string | undefined>(undefined);
+  // Inventory names for validation and suggestions
+  const inventoryNames = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const it of inventory) {
+      const raw = String(it.name || "");
+      const key = raw.toLowerCase().trim();
+      if (!key) continue;
+      if (!seen.has(key)) { seen.add(key); out.push(raw); }
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  }, [inventory]);
+  const inventoryNameSet = useMemo(() => new Set(inventoryNames.map(n => n.toLowerCase().trim())), [inventoryNames]);
+  const inventoryNameUnitMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const it of inventory) {
+      const key = String(it.name || "").toLowerCase().trim();
+      if (key && !map.has(key)) map.set(key, it.unit);
+    }
+    return map;
+  }, [inventory]);
 
   const universalUnits = [
     { value: "pcs", label: "pcs" },
@@ -248,6 +280,7 @@ export default function InventoryDialog({
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(v) => {
       setOpen(v);
       if (v) {
@@ -410,10 +443,13 @@ export default function InventoryDialog({
             }}>
               <div className="flex items-center justify-between mb-2">
                 <h3 className="font-semibold font-headline">Inventory</h3>
-                <TabsList>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>Bulk Consume</Button>
+                  <TabsList>
                   <TabsTrigger value="current">Current</TabsTrigger>
                   <TabsTrigger value="expired">Expired</TabsTrigger>
-                </TabsList>
+                  </TabsList>
+                </div>
               </div>
 
               <TabsContent value="current">
@@ -557,6 +593,209 @@ export default function InventoryDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+  </Dialog>
+    {/* Bulk Consume Dialog */}
+    <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="font-headline">Bulk Consume</DialogTitle>
+          <DialogDescription>Subtract multiple ingredients from your inventory at once.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {/* Column headers (single row) */}
+          <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground px-1">
+            <div className="col-span-6">Name</div>
+            <div className="col-span-3">Quantity</div>
+            <div className="col-span-3">Unit</div>
+          </div>
+          {bulkRows.map((row, idx) => (
+            <div key={idx} className="grid grid-cols-12 gap-2 items-end">
+              <div className="col-span-6 space-y-1">
+                <Input
+                  value={row.name}
+                  list="inventory-names"
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setBulkRows((prev) => prev.map((r, i) => {
+                      if (i !== idx) return r;
+                      const lc = v.toLowerCase().trim();
+                      // If exact inventory match, snap unit to that item's unit
+                      const snapUnit = inventoryNameUnitMap.get(lc);
+                      return snapUnit ? { ...r, name: v, unit: snapUnit } : { ...r, name: v };
+                    }));
+                  }}
+                  placeholder="e.g., chicken breast"
+                />
+                {!!row.name.trim() && !inventoryNameSet.has(row.name.trim().toLowerCase()) && (
+                  <p className="text-xs text-destructive">Not in inventory</p>
+                )}
+              </div>
+              <div className="col-span-3 space-y-1">
+                <Input
+                  type="number"
+                  value={row.quantity}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setBulkRows((prev) => prev.map((r, i) => i === idx ? { ...r, quantity: v } : r));
+                  }}
+                  placeholder="e.g., 300"
+                />
+              </div>
+              <div className="col-span-3 space-y-1">
+                <Select
+                  value={row.unit}
+                  onValueChange={(val) => setBulkRows((prev) => prev.map((r, i) => i === idx ? { ...r, unit: val } : r))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Unit" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-48">
+                    {availableUnits.map((u) => (
+                      <SelectItem key={`bulk-${idx}-${u.value}`} value={u.value}>{u.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-12 flex justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setBulkRows((prev) => prev.filter((_, i) => i !== idx))}
+                  disabled={bulkRows.length <= 1}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          ))}
+          {/* Datalist for name suggestions */}
+          <datalist id="inventory-names">
+            {inventoryNames.map((n) => (
+              <option value={n} key={n} />
+            ))}
+          </datalist>
+          <div className="flex justify-between pt-2">
+            <Button variant="outline" onClick={() => setBulkRows((prev) => [...prev, { name: "", quantity: "", unit: "g" }])}>
+              <PlusCircle className="h-4 w-4 mr-2" /> Add Row
+            </Button>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => setBulkOpen(false)}>Cancel</Button>
+              <Button
+                onClick={async () => {
+                  if (!user?.id) return;
+                  const items = bulkRows
+                    .map(r => ({ name: r.name.trim(), quantity: parseFloat(r.quantity || '0'), unit: r.unit }))
+                    .filter(r => r.name && r.quantity > 0);
+                  if (items.length === 0) { setBulkOpen(false); return; }
+                  // Validate all names are present in inventory
+                  const missing = items.filter(it => !inventoryNameSet.has(it.name.toLowerCase().trim())).map(it => it.name);
+                  if (missing.length > 0) {
+                    alert(`These names are not in your inventory: \n- ${missing.join("\n- ")}`);
+                    return;
+                  }
+                  // Snapshot old totals by name before consuming
+                  const targetNames = Array.from(new Set(items.map(i => i.name.toLowerCase().trim())));
+                  const aggregateTotals = (list: InventoryFormItem[]) => {
+                    const totals = new Map<string, number>();
+                    const units = new Map<string, string>();
+                    for (const it of list) {
+                      const key = String(it.name || '').toLowerCase().trim();
+                      if (!targetNames.includes(key)) continue;
+                      totals.set(key, (totals.get(key) || 0) + (it.quantity || 0));
+                      if (!units.has(key)) units.set(key, it.unit || '');
+                    }
+                    return { totals, units };
+                  };
+                  const beforeAgg = aggregateTotals(inventory);
+                  const res = await bulkConsumeInventory(user.id, items);
+                  if (!res.ok) {
+                    alert(res.message || 'Failed to apply bulk consumption');
+                    return;
+                  }
+                  // Refresh inventory from API and update parent
+                  try {
+                    const apiInv = await getInventory(user.id);
+                    const formInventory: InventoryFormItem[] = apiInv.map(item => ({
+                      id: item.id,
+                      name: item.item_name,
+                      quantity: item.quantity,
+                      unit: item.unit,
+                      purchaseDate: item.added_at,
+                      expiryDate: item.expiry_date,
+                      shelfLife: 7,
+                    }));
+                    // Compute new totals and prepare cooked-style summary (old -> new) (removed)
+                    const afterAgg = aggregateTotals(formInventory);
+                    const v = (n: number) => {
+                      const r = Math.round((n + Number.EPSILON) * 100) / 100;
+                      return Number.isInteger(r) ? r.toString() : r.toString();
+                    };
+                    const byRequestedOrder = Array.from(new Set(items.map(i => i.name)));
+                    const summaryItems: BulkSummaryItem[] = [];
+                    for (const displayName of byRequestedOrder) {
+                      const key = displayName.toLowerCase().trim();
+                      const oldQty = beforeAgg.totals.get(key) || 0;
+                      const newQty = afterAgg.totals.get(key) || 0;
+                      const unit = afterAgg.units.get(key) || beforeAgg.units.get(key) || items.find(i => i.name.toLowerCase().trim() === key)?.unit || '';
+                      const removed = Math.max(0, oldQty - newQty);
+                      // Only show if there was any change or if item existed
+                      if (oldQty > 0 || removed > 0) {
+                        summaryItems.push({ type: 'quantity', name: displayName, oldQty, newQty, unit });
+                      } else {
+                        // fallback when not found or zero
+                        summaryItems.push({ type: 'status', name: displayName, status: 'not found in inventory' });
+                      }
+                    }
+                    setBulkSummaryItems(summaryItems);
+                    setBulkSummaryNote(res.message);
+                    setBulkSummaryOpen(true);
+                    onUpdateInventory(formInventory);
+                  } catch {}
+                  setBulkOpen(false);
+                  // Reset rows
+                  setBulkRows([{ name: '', quantity: '', unit: 'g' }]);
+                }}
+              >
+                Apply
+              </Button>
+            </div>
+          </div>
+        </div>
+      </DialogContent>
     </Dialog>
+    {/* Bulk Consume Result Popup */}
+    <AlertDialog open={bulkSummaryOpen} onOpenChange={setBulkSummaryOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Inventory updated</AlertDialogTitle>
+        </AlertDialogHeader>
+        <div className="text-sm text-muted-foreground">
+          {bulkSummaryNote && (
+            <p className="mb-2 text-foreground">{bulkSummaryNote}</p>
+          )}
+          <ul className="list-disc pl-5 space-y-1 text-foreground">
+            {bulkSummaryItems.map((it, idx) => {
+              if (it.type === 'quantity') {
+                const delta = it.oldQty - it.newQty;
+                const v = (n: number) => {
+                  const r = Math.round((n + Number.EPSILON) * 100) / 100;
+                  return Number.isInteger(r) ? r.toString() : r.toString();
+                };
+                return (
+                  <li key={idx}>
+                    {it.name}: {v(it.oldQty)} {it.unit} <span className="mx-1">→</span> {v(it.newQty)} {it.unit} <span className="text-destructive font-medium">({delta > 0 ? '-' : ''}{v(Math.abs(delta))} {it.unit})</span>
+                  </li>
+                );
+              }
+              return (<li key={idx}>{it.name}: {it.status}</li>);
+            })}
+          </ul>
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogAction onClick={() => setBulkSummaryOpen(false)}>OK</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }

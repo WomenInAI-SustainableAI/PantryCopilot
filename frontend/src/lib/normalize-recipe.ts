@@ -1,4 +1,5 @@
 import type { NormalizedRecipe } from "@/lib/types";
+import { classifyRecipeCategory } from "@/lib/categories";
 
 // Convert Spoonacular/backend recipe payloads to a consistent NormalizedRecipe shape
 function stripHtmlToSteps(html?: string): string[] {
@@ -25,6 +26,11 @@ export function normalizeRecipe(raw: any): NormalizedRecipe {
   // return a normalized shape without re-parsing Spoonacular fields.
   const looksNormalized = Array.isArray(raw?.ingredients) && raw.ingredients.every((i: any) => i && typeof i === 'object' && 'name' in i && 'quantity' in i);
   if (looksNormalized) {
+    const tags: string[] = [
+      ...(((raw as any)?.dishTypes || []) as string[]),
+      ...(((raw as any)?.cuisines || []) as string[]),
+    ].filter(Boolean);
+    const categories = classifyRecipeCategory(String(raw?.title || ''), tags);
     return {
       id: raw?.id ? String(raw.id) : (raw?.recipeId ? String(raw.recipeId) : ''),
       title: raw?.title || '',
@@ -36,6 +42,7 @@ export function normalizeRecipe(raw: any): NormalizedRecipe {
       imageId: raw?.imageId || '',
       image: raw?.image || raw?.imageUrl,
       matchPercentage: raw?.matchPercentage ?? raw?.scoring?.match_percentage ?? 0,
+      categories,
     } as NormalizedRecipe;
   }
 
@@ -70,6 +77,11 @@ export function normalizeRecipe(raw: any): NormalizedRecipe {
   }
 
   const matchPercentage = raw?.scoring?.match_percentage ?? raw?.matchPercentage ?? raw?.scoring?.matchPercentage ?? 0;
+  const tags: string[] = [
+    ...(((raw as any)?.dishTypes || []) as string[]),
+    ...(((raw as any)?.cuisines || []) as string[]),
+  ].filter(Boolean);
+  const categories = classifyRecipeCategory(String(raw?.title || ''), tags);
 
   return {
     id: raw?.id ? String(raw.id) : (raw?.recipeId ? String(raw.recipeId) : ''),
@@ -81,5 +93,6 @@ export function normalizeRecipe(raw: any): NormalizedRecipe {
     image: raw?.image || raw?.imageUrl,
     servings: typeof raw?.servings === 'number' ? raw.servings : undefined,
     matchPercentage: matchPercentage,
+    categories,
   } as NormalizedRecipe;
 }

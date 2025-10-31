@@ -221,6 +221,30 @@ export async function addExpiredAck(userId: string, keys: string[]): Promise<boo
     }
 }
 
+// Bulk consume inventory items (user cooked outside the app)
+export async function bulkConsumeInventory(
+    userId: string,
+    items: Array<{ name: string; quantity: number; unit?: string }>
+): Promise<{ ok: boolean; inventory_updates?: Record<string, string>; message?: string }>{
+    try {
+        const res = await fetch(`${API_BASE}/api/users/${userId}/inventory/bulk-consume`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items })
+        });
+        if (!res.ok) {
+            let message = res.statusText || 'Failed to apply bulk consumption.';
+            try { const err = await res.json(); message = err?.detail || err?.message || message; } catch {}
+            return { ok: false, message };
+        }
+        const data = await res.json();
+        return { ok: !!data?.ok, inventory_updates: data?.inventory_updates, message: data?.message };
+    } catch (e) {
+        console.error('Error calling bulk consume endpoint:', e);
+        return { ok: false, message: 'Network error calling bulk consume endpoint.' };
+    }
+}
+
 export async function updateInventoryItem(userId: string, itemId: string, updates: Partial<InventoryItem>): Promise<InventoryItem> {
     const response = await fetch(`${API_BASE}/api/users/${userId}/inventory/${itemId}`, {
         method: 'PUT',
