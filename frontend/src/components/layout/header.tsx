@@ -12,9 +12,23 @@ import {
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useAuth } from "@/lib/auth";
+import UserSettingsDialog from "@/components/settings/user-settings-dialog";
+import type { UserSettings } from "@/lib/types";
 
-export default function Header() {
+interface HeaderProps {
+  settings?: UserSettings;
+  onUpdateSettings?: (settings: UserSettings) => void;
+}
+
+export default function Header({ settings, onUpdateSettings }: HeaderProps) {
   const { user, logout } = useAuth();
+
+  // Merge persisted settings with auth profile as fallback for display and dialog defaults
+  const mergedSettings: UserSettings = {
+    userId: settings?.userId || user?.id || '',
+    name: (settings?.name && settings.name.trim()) ? settings.name : (user?.name || ''),
+    email: (settings?.email && settings.email.trim()) ? settings.email : (user?.email || ''),
+  };
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b bg-background px-4 sm:static sm:h-auto sm:border-0 sm:bg-transparent sm:px-6">
@@ -34,7 +48,14 @@ export default function Header() {
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>{user?.name || 'My Account'}</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>Settings</DropdownMenuItem>
+            <UserSettingsDialog
+              settings={mergedSettings}
+              onUpdateSettings={onUpdateSettings || (() => {})}
+            >
+              <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                Settings
+              </DropdownMenuItem>
+            </UserSettingsDialog>
             <DropdownMenuItem>Support</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={logout}>Logout</DropdownMenuItem>

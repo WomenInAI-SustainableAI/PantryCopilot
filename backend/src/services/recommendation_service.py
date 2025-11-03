@@ -4,6 +4,7 @@ Main service that orchestrates recipe recommendations with all features
 Includes CMAB (Contextual Multi-Armed Bandit) for personalized learning
 """
 from typing import List, Dict, Optional
+import os
 from src.db.crud import (
     get_user_inventory,
     get_user_allergies,
@@ -11,12 +12,8 @@ from src.db.crud import (
     create_recommendation
 )
 from src.db.crud.cmab import CMABCRUD
-from src.db.models import RecipeRecommendationCreate
-from src.services.spoonacular_service import (
-    search_recipes_by_ingredients,
-    get_recipe_information,
-    search_recipes_complex
-)
+from src.db.models import RecipeRecommendationCreate, Allergy
+from src.services.providers.recipe_provider import get_recipe_provider
 from src.services.recipe_scoring_service import rank_recipes
 from src.services.inventory_service import get_expiring_soon
 from src.services.cmab_service import (
@@ -24,6 +21,7 @@ from src.services.cmab_service import (
     ContextFeatures,
     convert_feedback_to_reward
 )
+# Mock dataset access is now encapsulated in the provider facade
 # from src.ai.flows.explain_recipe_recommendation import explain_recipe_recommendation
 
 
@@ -53,11 +51,112 @@ async def get_personalized_recommendations(
     """
     # 1. Get user data
     inventory = get_user_inventory(user_id)
+    # Merge allergies from the dedicated allergies subcollection and user preferences
     allergies = get_user_allergies(user_id)
+    try:
+        from src.db.firestore import db  # local import to avoid hard dependency at module load
+        doc = (
+            db.collection("users").document(user_id)
+            .collection("preferences").document("settings")
+            .get()
+        )
+        if doc.exists:
+            prefs = doc.to_dict() or {}
+            pref_allergies = [
+                str(a).strip().lower()
+                for a in (prefs.get("allergies") or [])
+                if isinstance(a, str)
+            ]
+            existing = {str(getattr(a, "allergen", "")).strip().lower() for a in allergies}
+            for s in pref_allergies:
+                if s and s not in existing:
+                    # Create a lightweight Allergy model entry for scoring/filtering
+                    allergies.append(Allergy(id=f"pref:{s}", user_id=user_id, allergen=s))
+    except Exception as e:
+        # Non-fatal: continue with whatever we have
+        print(f"Warning: failed to merge preferences allergies: {e}")
     expiring_items = get_expiring_soon(user_id, days=3)
+    use_mock = os.getenv("USE_MOCK_RECOMMENDATIONS", "false").lower() == "true"
+    provider = get_recipe_provider(use_mock=use_mock)
     
     if not inventory:
-        return []
+        # No inventory: still build full response shape so UI gets descriptions, categories, explanations
+        if use_mock:
+            raw = await provider.search_by_category("general", number_of_recipes * 2)
+            detailed_recipes: List[Dict] = []
+            for recipe in raw:
+                try:
+                    # Ensure ingredients array of names for scoring
+                    ingredients = []
+                    if "extendedIngredients" in recipe:
+                        ingredients = [ing.get("name", "") for ing in recipe.get("extendedIngredients", [])]
+                    recipe["ingredients"] = [n for n in ingredients if isinstance(n, str) and n]
+
+                    # Classify categories and attach explanation
+                    recipe_tags = recipe.get("dishTypes", []) + recipe.get("cuisines", [])
+                    recipe_categories = RecipeCategory.classify_recipe(
+                        recipe.get("title", ""),
+                        recipe_tags
+                    )
+                    recipe["categories"] = recipe_categories
+                    detailed_recipes.append(recipe)
+                except Exception as e:
+                    print(f"Mock preparation error: {e}")
+                    continue
+
+            # Rank even with empty inventory (match will be 0, but urgency/feedback may contribute)
+            feedback_history = get_user_feedback(user_id)
+            feedback_scores = {}
+            for feedback in feedback_history:
+                rid = feedback.recipe_id
+                feedback_scores[rid] = feedback_scores.get(rid, 0.0)
+                if feedback.feedback_type.value == "upvote":
+                    feedback_scores[rid] += 2.0
+                elif feedback.feedback_type.value == "downvote":
+                    feedback_scores[rid] -= 3.0
+                elif feedback.feedback_type.value == "skip":
+                    feedback_scores[rid] -= 1.0
+
+            ranked_recipes = rank_recipes(
+                recipes=detailed_recipes,
+                user_inventory=inventory,
+                user_allergies=allergies,
+                feedback_scores=feedback_scores
+            )
+
+            final_recommendations: List[Dict] = []
+            for recipe in ranked_recipes[:number_of_recipes]:
+                scoring = recipe.get("scoring", {})
+                if scoring and not scoring.get("is_allergen_safe", True):
+                    continue
+                recipe_categories = recipe.get("categories", ["general"])
+                cmab_explanation = f"Recommended based on your preference for {', '.join(recipe_categories[:2])} recipes."
+                recipe["ai_explanation"] = cmab_explanation
+                # Best-effort save recommendation (match % may be 0 with no inventory)
+                try:
+                    rec_data = RecipeRecommendationCreate(
+                        recipe_id=str(recipe.get("id")),
+                        inventory_match_percentage=scoring.get("match_percentage", 0.0),
+                        expiring_ingredients=scoring.get("expiring_ingredients", []),
+                        recommendation_score=scoring.get("overall_score", 0.0),
+                        explanation=recipe["ai_explanation"],
+                    )
+                    create_recommendation(user_id, rec_data)
+                except Exception as e:
+                    print(f"Error saving mock recommendation: {e}")
+                final_recommendations.append(recipe)
+            return final_recommendations
+
+        # Live: fetch popular recipes, then return raw list (frontend will normalize)
+        try:
+            # Return popular results from live provider
+            popular_recipes = await provider.search_by_category("general", number_of_recipes)
+            return popular_recipes
+        except Exception as e:
+            print(f"Error fetching popular recipes (falling back to mock): {e}")
+            # If live fails, reuse the mock path above
+            raw = await provider.search_by_category("general", number_of_recipes)
+            return raw
     
     # 2. Load or create CMAB model
     cmab_model = CMABCRUD.get_or_create(user_id)
@@ -77,8 +176,69 @@ async def get_personalized_recommendations(
     
     # 5. Extract ingredient names
     ingredient_names = [item.item_name for item in inventory]
-    expiring_names = [item.item_name for item in expiring_items]
+    # Deduplicate expiring names to reduce duplicate searches
+    expiring_names = []
+    seen_names = set()
+    for item in expiring_items:
+        name = (item.item_name or "").strip()
+        key = name.lower()
+        if name and key not in seen_names:
+            seen_names.add(key)
+            expiring_names.append(name)
     allergen_names = [allergy.allergen for allergy in allergies]
+
+    # Expand category-style allergens like "dairy" into concrete ingredient terms
+    def _expand_allergy_terms(terms: List[str]) -> List[str]:
+        mapping = {
+            'dairy': [
+                'milk','cheese','butter','yogurt','cream','whey','casein','caseinate','ghee','curd','paneer','kefir','ricotta','mozzarella','parmesan','cheddar','buttermilk','custard','lactose'
+            ],
+            'nuts': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'tree nut': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'treenut': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'peanut': ['peanut','peanuts','peanut butter','groundnut'],
+            'shellfish': ['shrimp','prawn','crab','lobster','crayfish','krill','shellfish'],
+            'fish': ['fish','salmon','tuna','cod','haddock','tilapia','trout','anchovy','sardine','mackerel','bass'],
+            'gluten': ['gluten','wheat','barley','rye','malt','semolina','farina','spelt','einkorn','emmer'],
+            'wheat': ['wheat','semolina','spelt','einkorn','emmer','farina'],
+            'soy': ['soy','soya','soybean','soybeans','soymilk','soy sauce','edamame','tofu','miso','tempeh'],
+            'sesame': ['sesame','tahini','sesame oil','sesame seeds'],
+            'mustard': ['mustard','mustard seeds','mustard powder'],
+            'celery': ['celery','celeriac'],
+            'lupin': ['lupin','lupine','lupine flour'],
+            'sulfite': ['sulfite','sulfites','sulphite','sulphites','sulfur dioxide','e220','e221','e222','e223','e224','e225','e226','e227','e228'],
+            'egg': ['egg','eggs','albumen'],
+            # Include broad beans/legumes to match scoring layer
+            'beans': [
+                'bean','beans','legume','legumes','chickpea','chickpeas','garbanzo','garbanzo beans','lentil','lentils',
+                'kidney bean','kidney beans','black bean','black beans','pinto bean','pinto beans','cannellini','cannellini beans',
+                'navy bean','navy beans','red bean','red beans','mung bean','mung beans','fava bean','fava beans','broad bean','broad beans',
+                'pea','peas','split pea','split peas','edamame','soybean','soybeans'
+            ],
+        }
+        out: List[str] = []
+        for t in terms:
+            k = (t or '').strip().lower()
+            if not k:
+                continue
+            out.append(k)
+            if k in mapping:
+                out.extend(mapping[k])
+        # de-duplicate while preserving order
+        seen = set()
+        dedup: List[str] = []
+        for x in out:
+            if x not in seen:
+                seen.add(x)
+                dedup.append(x)
+        return dedup
+    allergen_names_expanded = _expand_allergy_terms(allergen_names)
     
     # 6. Search recipes using Spoonacular with CMAB-selected categories
     recipes = []
@@ -86,63 +246,85 @@ async def get_personalized_recommendations(
     # Search in each selected category
     for category, score in selected_categories:
         try:
-            # Use category as cuisine or tag filter
-            category_recipes = await search_recipes_complex(
-                query=category if category != "general" else "",
-                cuisine=category if category in ["italian", "asian", "mexican", "american", "mediterranean", "indian"] else None,
-                type=category if category in ["breakfast", "dessert", "soup", "salad"] else None,
-                exclude_ingredients=allergen_names,
-                intolerances=allergen_names,
-                number=number_of_recipes
+            category_recipes = await provider.search_by_category(
+                category,
+                number_of_recipes,
+                exclude_ingredients=allergen_names_expanded,
+                intolerances=allergen_names_expanded,
             )
-            
-            if "results" in category_recipes:
-                recipes.extend(category_recipes["results"])
+            recipes.extend(category_recipes)
         except Exception as e:
             print(f"Error searching recipes for category {category}: {e}")
+            # Fallback: try mock via provider (it already encapsulates)
+            try:
+                fallback = await provider.search_by_category(category, number_of_recipes)
+                recipes.extend(fallback)
+            except Exception:
+                pass
     
     # Also search with expiring ingredients to prioritize urgency
     if expiring_names:
         try:
-            expiring_recipes = await search_recipes_by_ingredients(
-                ingredients=expiring_names,
-                number=number_of_recipes,
-                ranking=2  # Minimize missing ingredients
-            )
-            recipes.extend(expiring_recipes)
+            by_expiring = await provider.search_with_ingredients(expiring_names, number_of_recipes, ranking=2)
+            existing_ids = {r.get("id") if isinstance(r, dict) else r for r in recipes}
+            for r in by_expiring:
+                rid = r.get("id")
+                if rid not in existing_ids:
+                    recipes.append(r)
+                    existing_ids.add(rid)
         except Exception as e:
             print(f"Error searching recipes with expiring ingredients: {e}")
     
     # Fallback: Get recipes with all ingredients if needed
     if len(recipes) < number_of_recipes:
         try:
-            all_recipes = await search_recipes_by_ingredients(
-                ingredients=ingredient_names,
-                number=number_of_recipes * 2,
-                ranking=2
-            )
-            
-            # Add recipes that aren't already in the list
-            existing_ids = {r.get("id") for r in recipes}
-            for recipe in all_recipes:
-                if recipe.get("id") not in existing_ids:
-                    recipes.append(recipe)
+            # Ensure we have enough by topping up with inventory-related picks
+            need = number_of_recipes - len(recipes)
+            if need > 0:
+                by_inventory = await provider.search_with_ingredients(ingredient_names, max(need, number_of_recipes), ranking=2)
+                existing_ids = {r.get("id") if isinstance(r, dict) else r for r in recipes}
+                for r in by_inventory:
+                    rid = r.get("id")
+                    if rid not in existing_ids:
+                        recipes.append(r)
+                        existing_ids.add(rid)
+                    if len(recipes) >= number_of_recipes:
+                        break
+                # If still not enough, top up with general
+                still_need = number_of_recipes - len(recipes)
+                if still_need > 0:
+                    recipes.extend(await provider.search_by_category("general", still_need))
         except Exception as e:
             print(f"Error in fallback recipe search: {e}")
+            # Ensure we still return something if possible
+            try:
+                recipes.extend(await provider.search_by_category("general", number_of_recipes))
+            except Exception:
+                pass
         
     # 7. Get detailed information for each recipe
     detailed_recipes = []
-    for recipe in recipes[:number_of_recipes * 3]:  # Get more than needed for filtering
+    for recipe in recipes[: number_of_recipes * 3]:  # Get more than needed for filtering
         try:
-            recipe_info = await get_recipe_information(recipe["id"])
-            
+            # If the recipe already contains extendedIngredients (e.g. mock), reuse it
+            if isinstance(recipe, dict) and recipe.get("extendedIngredients"):
+                recipe_info = recipe
+            else:
+                rid = recipe.get("id") if isinstance(recipe, dict) else None
+                if rid is None:
+                    continue
+                recipe_info = await provider.get_details(rid)
+                if not recipe_info:
+                    # In mock mode, provider returns None; skip
+                    continue
+
             # Extract ingredient names
             ingredients = []
             if "extendedIngredients" in recipe_info:
                 ingredients = [ing.get("name", "") for ing in recipe_info["extendedIngredients"]]
-            
+
             recipe_info["ingredients"] = ingredients
-            
+
             # Classify recipe into categories for CMAB tracking
             recipe_tags = recipe_info.get("dishTypes", []) + recipe_info.get("cuisines", [])
             recipe_categories = RecipeCategory.classify_recipe(
@@ -150,10 +332,10 @@ async def get_personalized_recommendations(
                 recipe_tags
             )
             recipe_info["categories"] = recipe_categories
-            
+
             detailed_recipes.append(recipe_info)
         except Exception as e:
-            print(f"Error fetching recipe {recipe['id']}: {e}")
+            print(f"Error fetching recipe {recipe.get('id') if isinstance(recipe, dict) else recipe}: {e}")
             continue
     
     # 8. Calculate feedback scores from historical data
@@ -277,6 +459,7 @@ async def get_recommendations_by_preferences(
     user_id: str,
     cuisine: Optional[str] = None,
     diet: Optional[str] = None,
+    dish_type: Optional[str] = None,
     number_of_recipes: int = 10
 ) -> List[Dict]:
     """
@@ -284,8 +467,9 @@ async def get_recommendations_by_preferences(
     
     Args:
         user_id: User ID
-        cuisine: Cuisine type filter
-        diet: Diet type filter
+    cuisine: Cuisine type filter (e.g., italian, mexican)
+    diet: Diet type filter (e.g., vegetarian, vegan)
+    dish_type: Dish type filter (e.g., appetizer, main course, dessert, soup, salad)
         number_of_recipes: Number of recommendations
         
     Returns:
@@ -293,31 +477,127 @@ async def get_recommendations_by_preferences(
     """
     # Get user data
     inventory = get_user_inventory(user_id)
+    # Merge allergies from the dedicated allergies subcollection and user preferences
     allergies = get_user_allergies(user_id)
+    try:
+        from src.db.firestore import db  # local import to avoid hard dependency at module load
+        doc = (
+            db.collection("users").document(user_id)
+            .collection("preferences").document("settings")
+            .get()
+        )
+        if doc.exists:
+            prefs = doc.to_dict() or {}
+            pref_allergies = [
+                str(a).strip().lower()
+                for a in (prefs.get("allergies") or [])
+                if isinstance(a, str)
+            ]
+            existing = {str(getattr(a, "allergen", "")).strip().lower() for a in allergies}
+            for s in pref_allergies:
+                if s and s not in existing:
+                    allergies.append(Allergy(id=f"pref:{s}", user_id=user_id, allergen=s))
+    except Exception as e:
+        print(f"Warning: failed to merge preferences allergies: {e}")
     
     if not inventory:
         return []
     
     # Get allergen names for exclusion
     allergen_names = [allergy.allergen for allergy in allergies]
+
+    def _expand_allergy_terms(terms: List[str]) -> List[str]:
+        mapping = {
+            'dairy': [
+                'milk','cheese','butter','yogurt','cream','whey','casein','caseinate','ghee','curd','paneer','kefir','ricotta','mozzarella','parmesan','cheddar','buttermilk','custard','lactose'
+            ],
+            'nuts': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'tree nut': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'treenut': [
+                'almond','walnut','pecan','cashew','hazelnut','pistachio','macadamia','brazil nut','pine nut'
+            ],
+            'peanut': ['peanut','peanuts','peanut butter','groundnut'],
+            'shellfish': ['shrimp','prawn','crab','lobster','crayfish','krill','shellfish'],
+            'fish': ['fish','salmon','tuna','cod','haddock','tilapia','trout','anchovy','sardine','mackerel','bass'],
+            'gluten': ['gluten','wheat','barley','rye','malt','semolina','farina','spelt','einkorn','emmer'],
+            'wheat': ['wheat','semolina','spelt','einkorn','emmer','farina'],
+            'soy': ['soy','soya','soybean','soybeans','soymilk','soy sauce','edamame','tofu','miso','tempeh'],
+            'sesame': ['sesame','tahini','sesame oil','sesame seeds'],
+            'mustard': ['mustard','mustard seeds','mustard powder'],
+            'celery': ['celery','celeriac'],
+            'lupin': ['lupin','lupine','lupine flour'],
+            'sulfite': ['sulfite','sulfites','sulphite','sulphites','sulfur dioxide','e220','e221','e222','e223','e224','e225','e226','e227','e228'],
+            'egg': ['egg','eggs','albumen'],
+            # Match scoring layer beans/legumes mapping for external API exclusion
+            'beans': [
+                'bean','beans','legume','legumes','chickpea','chickpeas','garbanzo','garbanzo beans','lentil','lentils',
+                'kidney bean','kidney beans','black bean','black beans','pinto bean','pinto beans','cannellini','cannellini beans',
+                'navy bean','navy beans','red bean','red beans','mung bean','mung beans','fava bean','fava beans','broad bean','broad beans',
+                'pea','peas','split pea','split peas','edamame','soybean','soybeans'
+            ],
+        }
+        out: List[str] = []
+        for t in terms:
+            k = (t or '').strip().lower()
+            if not k:
+                continue
+            out.append(k)
+            if k in mapping:
+                out.extend(mapping[k])
+        seen = set()
+        dedup: List[str] = []
+        for x in out:
+            if x not in seen:
+                seen.add(x)
+                dedup.append(x)
+        return dedup
+    allergen_names_expanded = _expand_allergy_terms(allergen_names)
     
-    # Search with preferences
-    search_results = await search_recipes_complex(
-        cuisine=cuisine,
-        diet=diet,
-        exclude_ingredients=allergen_names,
-        intolerances=allergen_names,
-        number=number_of_recipes * 2
-    )
+    # Search with preferences via provider (mock or live behind a facade)
+    use_mock = os.getenv("USE_MOCK_RECOMMENDATIONS", "false").lower() == "true"
+    provider = get_recipe_provider(use_mock=use_mock)
+    recipes: List[Dict] = []
+    try:
+        category = dish_type or cuisine or "general"
+        recipes = await provider.search_by_category(
+            category,
+            number_of_recipes * 2,
+            exclude_ingredients=allergen_names_expanded,
+            intolerances=allergen_names_expanded,
+        )
+    except Exception as e:
+        print(f"Error in preference search (falling back to general): {e}")
+        try:
+            recipes = await provider.search_by_category("general", number_of_recipes * 2)
+        except Exception:
+            recipes = []
     
-    recipes = search_results.get("results", [])
-    
-    # Extract ingredients
+    # Extract ingredients and categorize (and add explanation)
     for recipe in recipes:
         ingredients = []
         if "extendedIngredients" in recipe:
-            ingredients = [ing.get("name", "") for ing in recipe["extendedIngredients"]]
-        recipe["ingredients"] = ingredients
+            ingredients = [ing.get("name", "") for ing in recipe.get("extendedIngredients", [])]
+        elif isinstance(recipe.get("ingredients"), list):
+            # Already a simple list of names or objects
+            ingredients = [
+                (i.get("name") if isinstance(i, dict) else str(i))
+                for i in (recipe.get("ingredients") or [])
+            ]
+        recipe["ingredients"] = [n for n in ingredients if isinstance(n, str) and n]
+
+        tags = (recipe.get("dishTypes", []) or []) + (recipe.get("cuisines", []) or [])
+        recipe_categories = RecipeCategory.classify_recipe(
+            recipe.get("title", ""),
+            tags
+        )
+        recipe["categories"] = recipe_categories
+        # Lightweight explanation similar to main path
+        cmab_explanation = f"Recommended based on your preference for {', '.join(recipe_categories[:2])} recipes."
+        recipe["ai_explanation"] = cmab_explanation
     
     # Get feedback scores
     feedback_history = get_user_feedback(user_id)
@@ -342,5 +622,12 @@ async def get_recommendations_by_preferences(
         user_allergies=allergies,
         feedback_scores=feedback_scores
     )
+    # Ensure we only return allergen-safe recipes in preferences endpoint as well
+    safe_ranked = []
+    for r in ranked_recipes:
+        scoring = r.get("scoring", {}) if isinstance(r, dict) else {}
+        if scoring.get("is_allergen_safe", True):
+            safe_ranked.append(r)
+        # else: drop unsafe
     
-    return ranked_recipes[:number_of_recipes]
+    return safe_ranked[:number_of_recipes]

@@ -2,7 +2,7 @@
 CRUD operations for Allergy subcollection
 """
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from src.db.firestore import db
@@ -28,7 +28,7 @@ class AllergyCRUD:
             Created allergy
         """
         allergy_id = str(uuid.uuid4())
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         allergy_dict = {
             "id": allergy_id,

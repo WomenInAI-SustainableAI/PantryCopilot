@@ -3,7 +3,7 @@ Recipe Scoring Service
 Scores recipes based on inventory match, expiring ingredients, and user preferences
 """
 from typing import List, Dict, Tuple
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from src.db.models import InventoryItem, Allergy
 
 
@@ -60,42 +60,53 @@ def calculate_expiry_urgency_score(
     Returns:
         Tuple of (urgency_score, expiring_ingredients_list)
     """
-    today = datetime.now()
+    # Always use UTC on the server
+    today = datetime.now(timezone.utc)
     expiring_ingredients = []
     urgency_score = 0.0
     
+    def _norm_dt(dt):
+        if isinstance(dt, date) and not isinstance(dt, datetime):
+            return datetime.combine(dt, datetime.min.time(), tzinfo=timezone.utc)
+        if isinstance(dt, datetime):
+            if getattr(dt, 'tzinfo', None) is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        return None
+
     for ingredient in recipe_ingredients:
         ingredient_lower = ingredient.lower()
-        
-        # Find matching inventory item
+
+        # Collect all matching inventory items for this ingredient
+        candidate_days: List[int] = []
+        matched_names: List[str] = []
         for item in user_inventory:
-            if ingredient_lower in item.item_name.lower() or \
-               item.item_name.lower() in ingredient_lower:
-                
-                # Convert expiry_date to datetime if it's a date object
-                expiry_dt = item.expiry_date
-                if isinstance(expiry_dt, date) and not isinstance(expiry_dt, datetime):
-                    expiry_dt = datetime.combine(expiry_dt, datetime.min.time())
-                
-                # Remove timezone info if present to make comparison work
-                if hasattr(expiry_dt, 'tzinfo') and expiry_dt.tzinfo is not None:
-                    expiry_dt = expiry_dt.replace(tzinfo=None)
-                
-                # Calculate days until expiry
-                days_until_expiry = (expiry_dt - today).days
-                
-                if days_until_expiry <= 3:
-                    expiring_ingredients.append(item.item_name)
-                    # Higher urgency for items expiring sooner
-                    if days_until_expiry <= 0:
-                        urgency_score += 10  # Expired
-                    elif days_until_expiry == 1:
-                        urgency_score += 8   # Expires tomorrow
-                    elif days_until_expiry == 2:
-                        urgency_score += 5   # Expires in 2 days
-                    else:
-                        urgency_score += 3   # Expires in 3 days
-                break
+            name_lower = item.item_name.lower()
+            if ingredient_lower in name_lower or name_lower in ingredient_lower:
+                expiry_dt = _norm_dt(item.expiry_date)
+                if expiry_dt is not None:
+                    candidate_days.append((expiry_dt - today).days)
+                    matched_names.append(item.item_name)
+
+        if not candidate_days:
+            continue
+
+        # Use the earliest expiry among matches for urgency scoring
+        min_days = min(candidate_days)
+        # Record unique names that are within urgency window
+        if min_days <= 3:
+            # Add unique item names
+            for n in matched_names:
+                if n not in expiring_ingredients:
+                    expiring_ingredients.append(n)
+            if min_days <= 0:
+                urgency_score += 10
+            elif min_days == 1:
+                urgency_score += 8
+            elif min_days == 2:
+                urgency_score += 5
+            else:
+                urgency_score += 3
     
     return urgency_score, expiring_ingredients
 
@@ -114,16 +125,70 @@ def check_allergen_safety(
     Returns:
         Tuple of (is_safe, allergens_found)
     """
-    allergen_names = [allergy.allergen.lower() for allergy in user_allergies]
-    allergens_found = []
-    
+    allergen_names = [str(allergy.allergen or "").strip().lower() for allergy in user_allergies]
+
+    # Expand basic variants (singular/plural) and common synonyms for broader coverage
+    synonyms = {
+        # Category-style already handled upstream, but include here for safety
+        "dairy": [
+            "milk","cheese","butter","yogurt","cream","whey","casein","caseinate","ghee","curd","paneer","kefir","ricotta","mozzarella","parmesan","cheddar","buttermilk","custard","lactose"
+        ],
+        "nuts": [
+            "almond","walnut","pecan","cashew","hazelnut","pistachio","macadamia","brazil nut","pine nut","nut","nuts"
+        ],
+        "tree nut": [
+            "almond","walnut","pecan","cashew","hazelnut","pistachio","macadamia","brazil nut","pine nut","nut","nuts"
+        ],
+        "treenut": [
+            "almond","walnut","pecan","cashew","hazelnut","pistachio","macadamia","brazil nut","pine nut","nut","nuts"
+        ],
+        "shellfish": ["shrimp","prawn","crab","lobster","crayfish","krill","shellfish"],
+        "fish": ["fish","salmon","tuna","cod","haddock","tilapia","trout","anchovy","sardine","mackerel","bass"],
+        "gluten": ["gluten","wheat","barley","rye","malt","semolina","farina","spelt","einkorn","emmer"],
+        "wheat": ["wheat","semolina","spelt","einkorn","emmer","farina"],
+        "soy": ["soy","soya","soybean","soybeans","soymilk","soy sauce","edamame","tofu","miso","tempeh"],
+        "sesame": ["sesame","tahini","sesame oil","sesame seed","sesame seeds"],
+        "mustard": ["mustard","mustard seed","mustard seeds","mustard powder"],
+        "celery": ["celery","celeriac"],
+        "lupin": ["lupin","lupine","lupine flour"],
+        "sulfite": ["sulfite","sulfites","sulphite","sulphites","sulfur dioxide","e220","e221","e222","e223","e224","e225","e226","e227","e228"],
+        "egg": ["egg","eggs","albumen"],
+        # Broad bean/legume coverage for users who specify "beans"
+        "beans": [
+            "bean","beans","legume","legumes","chickpea","chickpeas","garbanzo","garbanzo beans","lentil","lentils",
+            "kidney bean","kidney beans","black bean","black beans","pinto bean","pinto beans","cannellini","cannellini beans",
+            "navy bean","navy beans","red bean","red beans","mung bean","mung beans","fava bean","fava beans","broad bean","broad beans",
+            "pea","peas","split pea","split peas","edamame","soybean","soybeans"
+        ],
+    }
+
+    expanded_allergens: set[str] = set()
+    for a in allergen_names:
+        if not a:
+            continue
+        expanded_allergens.add(a)
+        # singular/plural variants
+        if a.endswith("s") and len(a) > 1:
+            expanded_allergens.add(a[:-1])
+        else:
+            expanded_allergens.add(a + "s")
+        # synonyms
+        if a in synonyms:
+            for s in synonyms[a]:
+                s = s.strip().lower()
+                if s:
+                    expanded_allergens.add(s)
+
+    allergens_found: List[str] = []
     for ingredient in recipe_ingredients:
-        ingredient_lower = ingredient.lower()
-        
-        for allergen in allergen_names:
-            if allergen in ingredient_lower:
+        ingredient_lower = str(ingredient or "").lower()
+        if not ingredient_lower:
+            continue
+        for allergen in expanded_allergens:
+            if allergen and allergen in ingredient_lower:
                 allergens_found.append(allergen)
-    
+                # No break: capture multiple hits for debugging/telemetry
+
     is_safe = len(allergens_found) == 0
     return is_safe, allergens_found
 

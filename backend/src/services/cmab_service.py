@@ -15,7 +15,7 @@ Cold Start Strategy:
 
 import numpy as np
 from typing import List, Dict, Tuple
-from datetime import datetime
+from datetime import datetime, date, timezone
 
 from src.db.models import InventoryItem, FeedbackType
 
@@ -103,7 +103,8 @@ class ContextFeatures:
                 "inventory_diversity": 0.0,
             }
         
-        now = datetime.now()
+        # Always use UTC on the server
+        now = datetime.now(timezone.utc)
         expiring_count = 0
         
         # Category indicators
@@ -118,7 +119,14 @@ class ContextFeatures:
         for item in inventory:
             # Check expiring
             expiry_dt = item.expiry_date
+            # Normalize to UTC-aware datetime
+            if isinstance(expiry_dt, date) and not isinstance(expiry_dt, datetime):
+                expiry_dt = datetime.combine(expiry_dt, datetime.min.time(), tzinfo=timezone.utc)
             if isinstance(expiry_dt, datetime):
+                if getattr(expiry_dt, "tzinfo", None) is None:
+                    expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+                else:
+                    expiry_dt = expiry_dt.astimezone(timezone.utc)
                 days_until = (expiry_dt - now).days
                 if days_until <= 3:
                     expiring_count += 1

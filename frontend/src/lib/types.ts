@@ -1,11 +1,33 @@
 export interface InventoryItem {
   id: string;
+  item_name: string;
+  quantity: number;
+  unit: string;
+  expiry_date: string;
+  user_id: string;
+  added_at: string;
+  updated_at: string;
+}
+
+// Frontend-only interface for the form
+export interface InventoryFormItem {
+  id: string;
   name: string;
   quantity: number;
   unit: string;
   purchaseDate: string;
   expiryDate: string;
-  shelfLife: number; // in days
+  shelfLife: number;
+}
+
+// API request interfaces
+export interface AddInventoryRequest {
+  item_name: string;
+  quantity: number;
+  unit?: string;
+  // Optional fields supported by the backend for better expiry control
+  purchase_date?: string; // YYYY-MM-DD
+  shelf_life_days?: number;
 }
 
 export interface Ingredient {
@@ -21,10 +43,28 @@ export interface Recipe {
   ingredients: Ingredient[];
   instructions: string[];
   imageId: string;
+  image?: string; // Spoonacular image URL
+  servings?: number;
   matchPercentage?: number;
   expiringIngredientsCount?: number;
   score?: number;
+  // CMAB categories computed client-side to align with backend RecipeCategory
+  categories?: string[];
 }
+
+// Normalized recipe shape used by the frontend after converting Spoonacular payloads
+export interface NormalizedIngredient {
+  name: string;
+  quantity: number;
+  unit: string;
+  original?: unknown;
+}
+
+export type NormalizedRecipe = Omit<Recipe, "ingredients" | "instructions"> & {
+  ingredients: NormalizedIngredient[];
+  instructions: string[];
+  matchPercentage: number;
+};
 
 export interface User {
   id: string;
@@ -43,8 +83,17 @@ export interface RegisterRequest {
   password: string;
 }
 
+export interface UserSettings {
+  userId: string;
+  name?: string;
+  email?: string;
+}
+
 export interface UserPreferences {
   userId: string;
   allergies: string[];
   dislikes: string[];
+  dietaryRestrictions?: string[];
+  cookingSkillLevel?: 'beginner' | 'intermediate' | 'advanced';
+  preferredCuisines?: string[];
 }
