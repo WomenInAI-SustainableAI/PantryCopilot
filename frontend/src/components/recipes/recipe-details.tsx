@@ -30,6 +30,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { cookRecipe } from "@/app/actions";
+import { toBase, fromBase } from "@/lib/units";
 // Lightweight client-side sanitizer for a limited set of tags/attrs.
 // We avoid adding a runtime dependency here; this sanitizer keeps basic formatting and links.
 function sanitizeHtml(dirty: string): string {
@@ -148,6 +149,8 @@ export default function RecipeDetails({
 
   const sanitizedDescription = useMemo(() => sanitizeHtml(normalized.description || ''), [normalized.description]);
 
+  // Unit normalization helpers moved to shared module '@/lib/units'.
+
   // Safely convert unknown values (objects/arrays/errors) into strings for rendering
   const toText = (val: any): string => {
     if (val == null) return '';
@@ -250,25 +253,64 @@ export default function RecipeDetails({
     (normalized.ingredients || []).forEach((ing) => {
       const name = (ing?.name || '').toLowerCase();
       const invItem = inventoryMap.get(name);
-      const qtyInv = invItem?.quantity ?? 0;
-      const qtyNeeded = ing?.quantity ?? 0;
+      const qtyInvRaw = invItem?.quantity ?? 0;
+      const qtyNeededRaw = ing?.quantity ?? 0;
+      const invBase = toBase(qtyInvRaw, invItem?.unit);
+      const needBase = toBase(qtyNeededRaw, ing?.unit);
 
-      if (qtyInv < qtyNeeded) {
-        // deficit is needed minus available
-        missing.push({ ...ing, quantity: Math.max(qtyNeeded - qtyInv, 0) });
+      // If we can compare within the same measurable family, do so in base units
+      if (invItem && needBase.family !== 'unknown' && invBase.family === needBase.family) {
+        if (invBase.value < needBase.value) {
+          const deficit = Math.max(needBase.value - invBase.value, 0);
+          const deficitInIngUnit = fromBase(deficit, ing?.unit);
+          missing.push({ ...ing, quantity: Math.round((deficitInIngUnit + Number.EPSILON) * 100) / 100 });
+        } else {
+          // Impact calculations by family
+          if (needBase.family === 'mass') {
+            const usedGrams = needBase.value;
+            const lbs = usedGrams * 0.00220462;
+            const pricePerKg = 3.0; // $ per kg (placeholder)
+            foodSavedLbs += lbs;
+            moneySaved += (usedGrams / 1000) * pricePerKg;
+          } else if (needBase.family === 'volume') {
+            const usedMl = needBase.value;
+            // Approximate 1 ml ~ 1 g for generic food items
+            const lbs = (usedMl /* g */) * 0.00220462;
+            const pricePerL = 1.0; // $ per liter (placeholder)
+            foodSavedLbs += lbs;
+            moneySaved += (usedMl / 1000) * pricePerL;
+          } else if (needBase.family === 'count') {
+            const usedCount = needBase.value;
+            const pricePerItem = 2.5; // $ per item (placeholder)
+            const weightPerItemLbs = 0.5; // lbs per item (placeholder)
+            moneySaved += usedCount * pricePerItem;
+            foodSavedLbs += usedCount * weightPerItemLbs;
+          }
+
+          // leftover amount shown in ingredient unit
+          const remainingBase = Math.max(invBase.value - needBase.value, 0);
+          const remainingInIngUnit = fromBase(remainingBase, ing?.unit);
+          if (remainingInIngUnit > 0) {
+            partial.push({
+              name: ing.name,
+              remaining: Math.round((remainingInIngUnit + Number.EPSILON) * 100) / 100,
+              unit: ing.unit || '',
+            });
+          }
+        }
       } else {
-        // Simple placeholder economics/environmental estimates
-        const pricePerUnit = 2.5; // $ per unit (placeholder)
-        const weightPerUnit = 0.5; // lbs per unit (placeholder)
-        moneySaved += qtyNeeded * pricePerUnit;
-        foodSavedLbs += qtyNeeded * weightPerUnit;
-
-        if (qtyInv > qtyNeeded) {
-          partial.push({
-            name: ing.name,
-            remaining: qtyInv - qtyNeeded,
-            unit: ing.unit || '',
-          });
+        // Fallback: unknown or mismatched families – use raw comparison like before
+        if (qtyInvRaw < qtyNeededRaw) {
+          missing.push({ ...ing, quantity: Math.max(qtyNeededRaw - qtyInvRaw, 0) });
+        } else {
+          // Keep original placeholder behavior for impact when comparable
+          const pricePerUnit = 2.5; // $ per unit (placeholder)
+          const weightPerUnit = 0.5; // lbs per unit (placeholder)
+          moneySaved += qtyNeededRaw * pricePerUnit;
+          foodSavedLbs += qtyNeededRaw * weightPerUnit;
+          if (qtyInvRaw > qtyNeededRaw) {
+            partial.push({ name: ing.name, remaining: qtyInvRaw - qtyNeededRaw, unit: ing.unit || '' });
+          }
         }
       }
     });
