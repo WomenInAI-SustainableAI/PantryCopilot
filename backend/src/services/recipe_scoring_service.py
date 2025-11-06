@@ -6,6 +6,12 @@ from typing import List, Dict, Tuple, Set
 from datetime import datetime, timedelta, date, timezone
 from src.db.models import InventoryItem, Allergy
 
+# --- Tunable scoring constants ---
+# When a recipe has a high inventory match, give it a small explicit boost so
+# near-cookable items consistently float to the top.
+HIGH_MATCH_THRESHOLD = 80.0  # percent
+HIGH_MATCH_BONUS = 5.0       # score points
+
 # --- Fuzzy token-based ingredient matching helpers (ported from frontend) ---
 _STOPWORDS: Set[str] = {
     "of","and","a","the","fresh","pcs","piece","pieces","unit","units",
@@ -316,6 +322,10 @@ def calculate_overall_recipe_score(
     if not is_safe:
         score = score * 0.1  # 90% penalty for allergens
     
+    # High-match explicit bonus
+    if match_percentage >= HIGH_MATCH_THRESHOLD:
+        score += HIGH_MATCH_BONUS
+
     # Cap at 100
     return min(100, max(0, score))
 
