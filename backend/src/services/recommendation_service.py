@@ -252,6 +252,11 @@ async def get_personalized_recommendations(
                 exclude_ingredients=allergen_names_expanded,
                 intolerances=allergen_names_expanded,
             )
+            # Only tag source in mock mode (live path unchanged)
+            if use_mock:
+                for r in category_recipes:
+                    if isinstance(r, dict):
+                        r.setdefault("_candidate_source", "category")
             recipes.extend(category_recipes)
         except Exception as e:
             print(f"Error searching recipes for category {category}: {e}")
@@ -270,6 +275,8 @@ async def get_personalized_recommendations(
             for r in by_expiring:
                 rid = r.get("id")
                 if rid not in existing_ids:
+                    if use_mock and isinstance(r, dict):
+                        r.setdefault("_candidate_source", "expiring")
                     recipes.append(r)
                     existing_ids.add(rid)
         except Exception as e:
@@ -283,6 +290,8 @@ async def get_personalized_recommendations(
         for r in inv_candidates:
             rid = r.get("id")
             if rid not in existing_ids:
+                if use_mock and isinstance(r, dict):
+                    r.setdefault("_candidate_source", "inventory")
                 recipes.append(r)
                 existing_ids.add(rid)
     except Exception as e:
@@ -299,6 +308,8 @@ async def get_personalized_recommendations(
                 for r in by_inventory:
                     rid = r.get("id")
                     if rid not in existing_ids:
+                        if use_mock and isinstance(r, dict):
+                            r.setdefault("_candidate_source", "inventory")
                         recipes.append(r)
                         existing_ids.add(rid)
                     if len(recipes) >= number_of_recipes:
@@ -306,18 +317,43 @@ async def get_personalized_recommendations(
                 # If still not enough, top up with general
                 still_need = number_of_recipes - len(recipes)
                 if still_need > 0:
-                    recipes.extend(await provider.search_by_category("general", still_need))
+                    general = await provider.search_by_category("general", still_need)
+                    if use_mock:
+                        for r in general:
+                            if isinstance(r, dict):
+                                r.setdefault("_candidate_source", "category")
+                    recipes.extend(general)
         except Exception as e:
             print(f"Error in fallback recipe search: {e}")
             # Ensure we still return something if possible
             try:
-                recipes.extend(await provider.search_by_category("general", number_of_recipes))
+                general = await provider.search_by_category("general", number_of_recipes)
+                if use_mock:
+                    for r in general:
+                        if isinstance(r, dict):
+                            r.setdefault("_candidate_source", "category")
+                recipes.extend(general)
             except Exception:
                 pass
         
     # 7. Get detailed information for each recipe
+    # In mock mode, prioritize candidates from expiring/inventory before fetching details
     detailed_recipes = []
-    for recipe in recipes[: number_of_recipes * 3]:  # Get more than needed for filtering
+    if use_mock:
+        priority = {"expiring": 0, "inventory": 1, "category": 2}
+        try:
+            recipes.sort(key=lambda r: (
+                priority.get(str((r or {}).get("_candidate_source", "category")), 2),
+                str((r or {}).get("id", "")),
+            ))
+        except Exception:
+            pass
+        fetch_limit = min(len(recipes), max(number_of_recipes * 3, 30))
+        recipe_iter = recipes[: fetch_limit]
+    else:
+        recipe_iter = recipes[: number_of_recipes * 3]
+
+    for recipe in recipe_iter:  # Get more than needed for filtering
         try:
             # If the recipe already contains extendedIngredients (e.g. mock), reuse it
             if isinstance(recipe, dict) and recipe.get("extendedIngredients"):

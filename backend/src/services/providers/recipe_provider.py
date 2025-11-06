@@ -67,7 +67,7 @@ class RecipeProvider:
     ) -> List[Dict]:
         """Search using ingredients (used for expiring inventory and fallback)."""
         if self.use_mock:
-            return find_mock_recipes_by_ingredients(ingredients or [], number)
+            return find_mock_recipes_by_ingredients(ingredients or [], number, ranking=ranking)
         return await live_search_by_ingredients(ingredients=ingredients or [], number=number, ranking=ranking)
 
     async def get_details(self, recipe_id: int) -> Optional[Dict]:

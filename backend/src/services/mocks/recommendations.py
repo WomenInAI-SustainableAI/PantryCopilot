@@ -5,7 +5,7 @@ Provides a small Spoonacular-like set of recipes for demo/fallback when the
 external API is unavailable or disabled. Keep this light-weight and safe to ship.
 """
 from __future__ import annotations
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set, Tuple
 from src.services.cmab_service import RecipeCategory
 
 
@@ -1354,47 +1354,124 @@ def _classify(recipe: Dict) -> List[str]:
     return RecipeCategory.classify_recipe(str(recipe.get("title", "")), tags)
 
 
-def find_mock_recipes_by_ingredients(ingredients: List[str], limit: int) -> List[Dict]:
-    """Find mock recipes that include any of the provided ingredient names.
+def find_mock_recipes_by_ingredients(ingredients: List[str], limit: int, ranking: int = 2) -> List[Dict]:
+    """Find mock recipes that best match provided ingredients using fuzzy matching.
 
-    Matching is case-insensitive and uses substring containment either way.
+    Mimics Spoonacular's behavior roughly:
+    - tokenizes and singularizes names, ignores common stopwords/units
+    - computes usedIngredientCount and missedIngredientCount-like metrics
+    - ranking=1 maximizes used ingredients; ranking=2 minimizes missed ingredients
     """
     if not ingredients:
         return []
-    names = [str(n or "").strip().lower() for n in ingredients if str(n or "").strip()]
-    if not names:
+
+    # --- lightweight fuzzy matcher (aligned with backend scorer) ---
+    _STOPWORDS: Set[str] = {
+        "of","and","a","the","fresh","pcs","piece","pieces","unit","units",
+        "can","cans","bottle","bottles","pack","package","pkg","slices","slice","clove","cloves","tbsp","tsp","cup","cups"
+    }
+
+    def _normalize(s: str) -> str:
+        return (s or "").strip().lower()
+
+    def _strip_punct(s: str) -> str:
+        import re
+        return re.sub(r"[\"'`,.~!@#$%^&*()_+={}\[\\\\\]\\|:;<>/?]", " ", s)
+
+    def _collapse_ws(s: str) -> str:
+        import re
+        return re.sub(r"\s+", " ", s).strip()
+
+    def _singular(w: str) -> str:
+        if not w:
+            return w
+        if w.endswith("oes") and len(w) > 3:
+            return w[:-3]
+        if w.endswith("ies") and len(w) > 3:
+            return w[:-3] + "y"
+        if any(w.endswith(suf) for suf in ["ches","shes","xes","zes","ses"]) and len(w) > 4:
+            return w[:-2]
+        if w.endswith("s") and not w.endswith("ss") and len(w) > 1:
+            return w[:-1]
+        return w
+
+    def tokenize(name: str) -> List[str]:
+        n = _collapse_ws(_strip_punct(_normalize(name)))
+        out: List[str] = []
+        for tok in n.split(" "):
+            if not tok or tok in _STOPWORDS:
+                continue
+            out.append(_singular(tok))
+        return out
+
+    def jaccard(a: Set[str], b: Set[str]) -> float:
+        if not a or not b:
+            return 0.0
+        inter = len(a & b)
+        return inter / (len(a) + len(b) - inter)
+
+    qnames = [str(n or "").strip() for n in ingredients if str(n or "").strip()]
+    qtokens_list = [set(tokenize(n)) for n in qnames]
+    if not qtokens_list:
         return []
-    results: List[Dict] = []
-    seen: set = set()
+
+    scored: List[Tuple[int, int, float, Dict]] = []  # (missed, used, avg_score, recipe)
     for r in get_mock_recommendations_raw():
         try:
-            ing_names = [
-                str(ing.get("name", "")).strip().lower()
-                for ing in (r.get("extendedIngredients") or [])
-            ]
+            ing_names = [str(ing.get("name", "")).strip() for ing in (r.get("extendedIngredients") or [])]
             if not ing_names:
                 continue
-            match = False
-            for q in names:
-                for iname in ing_names:
-                    if not q or not iname:
-                        continue
-                    if q in iname or iname in q:
-                        match = True
-                        break
-                if match:
-                    break
-            if match:
-                rid = r.get("id")
-                if rid in seen:
+            used = 0
+            scores: List[float] = []
+            for iname in ing_names:
+                itok = set(tokenize(iname))
+                if not itok:
                     continue
-                results.append(r)
-                seen.add(rid)
-                if len(results) >= max(1, int(limit) or 1):
-                    break
+                # Check best overlap against any query ingredient tokens
+                best = 0.0
+                subset_hit = False
+                for qtok in qtokens_list:
+                    if not qtok:
+                        continue
+                    score = jaccard(itok, qtok)
+                    if score > best:
+                        best = score
+                    if itok.issubset(qtok) or qtok.issubset(itok):
+                        subset_hit = True
+                if best >= 0.34 or subset_hit:
+                    used += 1
+                    scores.append(best if best > 0 else (1.0 if subset_hit else 0.0))
+            missed = max(0, len(ing_names) - used)
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+            # Only include recipes with at least one fuzzy hit
+            if used > 0:
+                scored.append((missed, used, avg_score, r))
         except Exception:
             continue
-    return results
+
+    if not scored:
+        return []
+
+    # Apply ranking similar to Spoonacular
+    if ranking == 1:
+        # maximize used ingredients, break ties by fewer missed, then avg score desc
+        scored.sort(key=lambda t: (t[1], -t[0], t[2]), reverse=True)
+    else:
+        # default and ranking=2: minimize missed ingredients, break ties by used desc, then avg score desc
+        scored.sort(key=lambda t: (-t[0], t[1], t[2]), reverse=True)
+
+    # Deduplicate by id while preserving order and respect limit
+    out: List[Dict] = []
+    seen_ids: Set[int] = set()
+    for _, _, _, rec in scored:
+        rid = rec.get("id")
+        if rid in seen_ids:
+            continue
+        seen_ids.add(rid)
+        out.append(rec)
+        if len(out) >= max(1, int(limit) or 1):
+            break
+    return out
 
 
 def pick_mock_recommendations_by_category(category: Optional[str], limit: int) -> List[Dict]:
