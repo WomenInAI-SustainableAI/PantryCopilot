@@ -2,11 +2,13 @@ export type UnitFamily = 'mass' | 'volume' | 'count' | 'unknown';
 
 // Normalize textual unit to a canonical key
 const normalizeStr = (s: string) => (s || '').toLowerCase().trim();
-const singularize = (s: string) => s.replace(/s\b/, '');
 
-export const unitKey = (u?: string): string =>
-  singularize(normalizeStr(u || ''))
-    .replace(/\.\b/g, '') // remove trailing dots like "tbsp." (best effort)
+export const unitKey = (u?: string): string => {
+  let k = normalizeStr(u || '');
+  // remove trailing dots (e.g., "tbsp.")
+  k = k.replace(/\.$/, '');
+  // canonical long forms
+  k = k
     .replace(/fluid\s*ounce|fluid\s*ounces/g, 'fl oz')
     .replace(/floz/g, 'fl oz')
     .replace(/millilitre|millilitres|milliliter|milliliters/g, 'ml')
@@ -15,8 +17,17 @@ export const unitKey = (u?: string): string =>
     .replace(/pound|pounds/g, 'lb')
     .replace(/gram|grams/g, 'g')
     .replace(/kilogram|kilograms/g, 'kg')
-    .replace(/tablespoon|tablespoons/g, 'tbsp')
-    .replace(/teaspoon|teaspoons/g, 'tsp');
+    .replace(/tablespoons?/g, 'tbsp')
+    .replace(/teaspoons?/g, 'tsp')
+    .replace(/pieces?/g, 'piece')
+    .replace(/items?/g, 'item')
+    .replace(/units?/g, 'unit')
+    .replace(/eggs?/g, 'egg')
+    .replace(/cloves?/g, 'clove')
+    .replace(/cans?/g, 'can');
+  if (k === 'pc') k = 'pcs';
+  return k;
+};
 
 // Converters
 export const MASS_TO_GRAMS: Readonly<Record<string, number>> = Object.freeze({

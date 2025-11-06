@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cookRecipe } from "@/app/actions";
 import { toBase, fromBase } from "@/lib/units";
+import { matchInventory } from "@/lib/ingredient-match";
 // Lightweight client-side sanitizer for a limited set of tags/attrs.
 // We avoid adding a runtime dependency here; this sanitizer keeps basic formatting and links.
 function sanitizeHtml(dirty: string): string {
@@ -207,22 +208,29 @@ export default function RecipeDetails({
   const imageUrl = spoonacularImage || placeholderImage?.imageUrl;
 
   const expiringIngredients = useMemo(() => {
-    const recipeIngredients = new Set(normalized.ingredients.map((i: Ingredient) => i.name.toLowerCase()));
-    return (inventory || []).filter(item => {
-      const expiry = item?.expiryDate ? new Date(item.expiryDate) : null;
-      if (!expiry || isNaN(expiry.getTime())) return false;
+    const result: string[] = [];
+    for (const ing of normalized.ingredients || []) {
+      const match = matchInventory(ing.name, inventory || []);
+      if (!match) continue;
+      const expiry = match?.expiryDate ? new Date(match.expiryDate) : null;
+      if (!expiry || isNaN(expiry.getTime())) continue;
       const daysUntilExpiry = differenceInDays(expiry, new Date());
-      return daysUntilExpiry <= 7 && recipeIngredients.has((item?.name || '').toLowerCase());
-    }).map(item => item.name);
+      if (daysUntilExpiry <= 7) result.push(ing.name);
+    }
+    return result;
   }, [inventory, normalized.ingredients]);
 
   const missingIngredients = useMemo(() => {
-    const inventoryMap = new Map<string, number>(
-      (inventory || []).map(item => [((item?.name || '')).toLowerCase(), item?.quantity ?? 0])
-    );
-    return normalized.ingredients.filter(
-      (ing: Ingredient) => (inventoryMap.get(ing.name.toLowerCase()) || 0) < (ing.quantity || 0)
-    );
+    return (normalized.ingredients || []).filter((ing: Ingredient) => {
+      const match = matchInventory(ing.name, inventory || []);
+      if (!match) return true;
+      const invBase = toBase(match.quantity || 0, match.unit);
+      const needBase = toBase(ing.quantity || 0, ing.unit);
+      if (invBase.family === needBase.family && needBase.family !== 'unknown') {
+        return invBase.value < needBase.value;
+      }
+      return (match.quantity || 0) < (ing.quantity || 0);
+    });
   }, [inventory, normalized.ingredients]);
 
   // Scaled ingredients based on selected servings
@@ -237,10 +245,7 @@ export default function RecipeDetails({
 
   // Client-side explanation info (inspired by v2)
   const explanationInfo = useMemo<ExplanationInfo>(() => {
-    const inventoryMap = new Map<string, InventoryFormItem>((inventory || []).map(item => [
-      (item?.name || '').toLowerCase(),
-      item
-    ]));
+    // We'll choose the best matching inventory item for each ingredient using token matching
     // Backend is authoritative for category expansion. Frontend performs a basic exact check only.
     const allergySet = new Set((userPreferences?.allergies || []).map(a => (a || '').toLowerCase()));
     const hasAllergens = (normalized.ingredients || []).some((ing) => allergySet.has(String(ing?.name || '').toLowerCase()));
@@ -251,8 +256,7 @@ export default function RecipeDetails({
     let foodSavedLbs = 0;
 
     (normalized.ingredients || []).forEach((ing) => {
-      const name = (ing?.name || '').toLowerCase();
-      const invItem = inventoryMap.get(name);
+      const invItem = matchInventory(ing?.name || '', inventory || []);
       const qtyInvRaw = invItem?.quantity ?? 0;
       const qtyNeededRaw = ing?.quantity ?? 0;
       const invBase = toBase(qtyInvRaw, invItem?.unit);
@@ -300,7 +304,7 @@ export default function RecipeDetails({
         }
       } else {
         // Fallback: unknown or mismatched families – use raw comparison like before
-        if (qtyInvRaw < qtyNeededRaw) {
+          if (qtyInvRaw < qtyNeededRaw) {
           missing.push({ ...ing, quantity: Math.max(qtyNeededRaw - qtyInvRaw, 0) });
         } else {
           // Keep original placeholder behavior for impact when comparable
