@@ -2,47 +2,91 @@
 Recipe Scoring Service
 Scores recipes based on inventory match, expiring ingredients, and user preferences
 """
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Set
 from datetime import datetime, timedelta, date, timezone
 from src.db.models import InventoryItem, Allergy
+
+# --- Fuzzy token-based ingredient matching helpers (ported from frontend) ---
+_STOPWORDS: Set[str] = {
+    "of","and","a","the","fresh","pcs","piece","pieces","unit","units",
+    "can","cans","bottle","bottles","pack","package","pkg"
+}
+
+def _normalize(s: str) -> str:
+    return (s or "").lower()
+
+def _strip_punct(s: str) -> str:
+    import re
+    return re.sub(r"[\"'`,.~!@#$%^&*()_+={}\[\]\\|:;<>/?]", ' ', s)
+
+def _collapse_ws(s: str) -> str:
+    import re
+    return re.sub(r'\s+', ' ', s).strip()
+
+def _singular(w: str) -> str:
+    if not w: return w
+    if w.endswith('oes') and len(w) > 3: # tomatoes, potatoes
+        return w[:-3]
+    if w.endswith('ies') and len(w) > 3:
+        return w[:-3] + 'y'
+    if any(w.endswith(suf) for suf in ['ches','shes','xes','zes','ses']) and len(w) > 4:
+        return w[:-2]
+    if w.endswith('s') and not w.endswith('ss') and len(w) > 1:
+        return w[:-1]
+    return w
+
+def tokenize(name: str) -> List[str]:
+    n = _collapse_ws(_strip_punct(_normalize(name)))
+    raw = [t for t in n.split(' ') if t]
+    out: List[str] = []
+    for tok in raw:
+        if tok in _STOPWORDS:
+            continue
+        out.append(_singular(tok))
+    return out
+
+def jaccard(a: Set[str], b: Set[str]) -> float:
+    if not a or not b: return 0.0
+    inter = len(a & b)
+    return inter / (len(a) + len(b) - inter)
+
+def ingredient_matches_inventory(ingredient: str, inventory_names: List[str]) -> Tuple[bool, List[str]]:
+    """Return (matched?, contributing inventory names) using token fuzzy match."""
+    ing_tokens = set(tokenize(ingredient))
+    if not ing_tokens:
+        return False, []
+    contributing: List[str] = []
+    best_score = 0.0
+    for inv in inventory_names:
+        inv_tokens = set(tokenize(inv))
+        if not inv_tokens:
+            continue
+        score = jaccard(ing_tokens, inv_tokens)
+        # Accept if reasonable overlap (>= 0.34) or one side subset
+        subset = ing_tokens.issubset(inv_tokens) or inv_tokens.issubset(ing_tokens)
+        if score >= 0.34 or subset:
+            contributing.append(inv)
+            best_score = max(best_score, score)
+    return len(contributing) > 0, contributing
 
 
 def calculate_inventory_match_percentage(
     recipe_ingredients: List[str],
     user_inventory: List[InventoryItem]
 ) -> Tuple[float, List[str], List[str]]:
-    """
-    Calculate what percentage of recipe ingredients are available in inventory.
-    
-    Args:
-        recipe_ingredients: List of ingredient names from recipe
-        user_inventory: User's inventory items
-        
-    Returns:
-        Tuple of (match_percentage, matched_ingredients, missing_ingredients)
-    """
+    """Fuzzy token inventory match percentage (mirrors frontend matching)."""
     if not recipe_ingredients:
         return 0.0, [], []
-    
-    inventory_names = [item.item_name.lower() for item in user_inventory]
-    matched = []
-    missing = []
-    
-    for ingredient in recipe_ingredients:
-        ingredient_lower = ingredient.lower()
-        is_matched = False
-        
-        # Check for partial matches
-        for inv_name in inventory_names:
-            if ingredient_lower in inv_name or inv_name in ingredient_lower:
-                matched.append(ingredient)
-                is_matched = True
-                break
-        
-        if not is_matched:
-            missing.append(ingredient)
-    
-    match_percentage = (len(matched) / len(recipe_ingredients)) * 100
+    inventory_names = [item.item_name for item in user_inventory]
+    matched: List[str] = []
+    missing: List[str] = []
+    for ing in recipe_ingredients:
+        ok, contributors = ingredient_matches_inventory(ing, inventory_names)
+        if ok:
+            matched.append(ing)
+        else:
+            missing.append(ing)
+    match_percentage = (len(matched) / len(recipe_ingredients)) * 100.0
     return match_percentage, matched, missing
 
 
@@ -74,15 +118,15 @@ def calculate_expiry_urgency_score(
             return dt.astimezone(timezone.utc)
         return None
 
+    inv_names = [it.item_name for it in user_inventory]
     for ingredient in recipe_ingredients:
-        ingredient_lower = ingredient.lower()
-
-        # Collect all matching inventory items for this ingredient
+        matched, contributors = ingredient_matches_inventory(ingredient, inv_names)
+        if not matched:
+            continue
         candidate_days: List[int] = []
         matched_names: List[str] = []
         for item in user_inventory:
-            name_lower = item.item_name.lower()
-            if ingredient_lower in name_lower or name_lower in ingredient_lower:
+            if item.item_name in contributors:
                 expiry_dt = _norm_dt(item.expiry_date)
                 if expiry_dt is not None:
                     candidate_days.append((expiry_dt - today).days)
@@ -211,24 +255,23 @@ def calculate_partial_usage_score(
     usage_score = 0.0
     matches = 0
     
+    inv_names = [it.item_name for it in user_inventory]
     for ingredient_name, required_qty in recipe_ingredients.items():
-        ingredient_lower = ingredient_name.lower()
-        
-        for item in user_inventory:
-            if ingredient_lower in item.item_name.lower() or \
-               item.item_name.lower() in ingredient_lower:
-                
-                matches += 1
-                # Higher score if recipe uses 50-100% of available quantity
-                usage_ratio = required_qty / item.quantity if item.quantity > 0 else 0
-                
-                if 0.5 <= usage_ratio <= 1.0:
-                    usage_score += 3  # Great usage
-                elif 0.3 <= usage_ratio < 0.5:
-                    usage_score += 2  # Good usage
-                elif usage_ratio < 0.3:
-                    usage_score += 1  # Partial usage
-                break
+        matched, contributors = ingredient_matches_inventory(ingredient_name, inv_names)
+        if not matched:
+            continue
+        # Pick the first contributing inventory item for usage ratio approximation
+        inv_item = next((it for it in user_inventory if it.item_name in contributors), None)
+        if not inv_item:
+            continue
+        matches += 1
+        usage_ratio = required_qty / inv_item.quantity if inv_item.quantity > 0 else 0
+        if 0.5 <= usage_ratio <= 1.0:
+            usage_score += 3
+        elif 0.3 <= usage_ratio < 0.5:
+            usage_score += 2
+        elif usage_ratio < 0.3:
+            usage_score += 1
     
     # Normalize to 0-10 scale
     if matches > 0:
