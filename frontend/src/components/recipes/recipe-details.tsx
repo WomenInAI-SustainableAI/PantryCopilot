@@ -31,7 +31,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cookRecipe } from "@/app/actions";
 import { toBase, fromBase } from "@/lib/units";
-import { matchInventory } from "@/lib/ingredient-match";
+import { matchInventory, matchAllInventory, tokenize } from "@/lib/ingredient-match";
 // Lightweight client-side sanitizer for a limited set of tags/attrs.
 // We avoid adding a runtime dependency here; this sanitizer keeps basic formatting and links.
 function sanitizeHtml(dirty: string): string {
@@ -458,51 +458,14 @@ export default function RecipeDetails({
     const usedFactor = (selectedServings || 1) / baseServings;
     const updates = (result.data?.inventory_updates || {}) as Record<string, string>;
 
-    // Helper: find ALL matching inventory items for an ingredient, sorted by earliest expiry first
+    // Use shared fuzzy inventory matching (now handles pluralization, stopwords, tokens)
     const findAllInv = (name: string): InventoryFormItem[] => {
-      const norm = (s: string) => (s || '').toLowerCase().replace(/["']/g, '').trim();
-      const tokens = (s: string) => norm(s).split(/\s+/).filter(Boolean);
-      const ingTokens = tokens(name);
-      const GENERIC_FALLBACKS = new Set([
-        'chicken','beef','pork','lamb','turkey','fish','seafood','shrimp',
-        'rice','pasta','noodles','tomato','potato','onion',
-        'milk','cheese','butter','yogurt','egg','eggs',
-        'flour','sugar','oil',
-      ]);
-      const matches: InventoryFormItem[] = [];
-      // exact
-      for (const it of (inventory || [])) {
-        if (norm(it.name) === norm(name)) matches.push(it);
-      }
-      // subset if ingredient has 2+ tokens
-      if (ingTokens.length >= 2) {
-        const ingSet = new Set(ingTokens);
-        for (const it of (inventory || [])) {
-          if (norm(it.name) === norm(name)) continue;
-          const invSet = new Set(tokens(it.name));
-          let subset = true;
-          for (const t of ingSet) { if (!invSet.has(t)) { subset = false; break; } }
-          if (subset) matches.push(it);
-        }
-        if (matches.length === 0) {
-          // generic fallback
-          for (const it of (inventory || [])) {
-            const invTs = new Set(tokens(it.name));
-            if (invTs.size === 1) {
-              const [tok] = Array.from(invTs);
-              if (GENERIC_FALLBACKS.has(tok) && ingTokens.includes(tok)) {
-                matches.push(it);
-              }
-            }
-          }
-        }
-      }
-      // sort by expiry ascending, then by quantity
+      const all = matchAllInventory(name, inventory || []);
+      // sort by expiry ascending then quantity for deterministic cooked summary ordering
       const toTime = (d: any) => {
         try { const t = new Date(d).getTime(); return Number.isFinite(t) ? t : Number.MAX_SAFE_INTEGER; } catch { return Number.MAX_SAFE_INTEGER; }
       };
-      matches.sort((a, b) => (toTime(a.expiryDate) - toTime(b.expiryDate)) || (a.quantity - b.quantity));
-      return matches;
+      return all.sort((a, b) => (toTime(a.expiryDate) - toTime(b.expiryDate)) || (a.quantity - b.quantity));
     };
 
     const parseBackendSegments = (msg: string): Array<{ kind: 'deleted' | 'updated'; newQty?: number; used?: number }> => {
