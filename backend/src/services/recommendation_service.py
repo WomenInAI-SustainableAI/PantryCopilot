@@ -400,9 +400,25 @@ async def get_personalized_recommendations(
         #     print(f"Error generating explanation for {recipe['title']}: {e}")
         #     recipe["ai_explanation"] = "This recipe is recommended based on your inventory."
         
-        # Add CMAB explanation
+        # Add CMAB explanation (avoid implying historical preferences during cold start)
         recipe_categories = recipe.get("categories", ["general"])
-        cmab_explanation = f"Recommended based on your preference for {', '.join(recipe_categories[:2])} recipes."
+        try:
+            match_pct = float(scoring.get("match_percentage", 0.0))
+        except Exception:
+            match_pct = 0.0
+        expl_prefix = (
+            "Exploring categories that may fit your pantry"
+            if getattr(cmab_model, "is_cold_start", True)
+            else "Recommended based on what you've engaged with"
+        )
+        extras = []
+        if match_pct > 0:
+            extras.append(f"matches {round(match_pct)}% of your pantry")
+        exp_list = scoring.get("expiring_ingredients", []) or []
+        if isinstance(exp_list, list) and len(exp_list) > 0:
+            extras.append(f"uses {', '.join([str(x) for x in exp_list[:2]])} soon")
+        extra_txt = f" ({'; '.join(extras)})" if extras else ""
+        cmab_explanation = f"{expl_prefix}: {', '.join(recipe_categories[:2])}.{extra_txt}"
         recipe["ai_explanation"] = cmab_explanation
         
         # 11. Save recommendation to database
@@ -607,10 +623,10 @@ async def get_recommendations_by_preferences(
             recipe.get("title", ""),
             tags
         )
-        recipe["categories"] = recipe_categories
-        # Lightweight explanation similar to main path
-        cmab_explanation = f"Recommended based on your preference for {', '.join(recipe_categories[:2])} recipes."
-        recipe["ai_explanation"] = cmab_explanation
+    recipe["categories"] = recipe_categories
+    # Lightweight explanation that doesn't imply prior preferences
+    cmab_explanation = f"Recommended in categories: {', '.join(recipe_categories[:2])}."
+    recipe["ai_explanation"] = cmab_explanation
     
     # Get feedback scores
     feedback_history = get_user_feedback(user_id)
