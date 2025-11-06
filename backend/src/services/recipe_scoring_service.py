@@ -350,7 +350,19 @@ def rank_recipes(
         
         scored_recipes.append(recipe)
     
-    # Sort by overall score (descending)
-    scored_recipes.sort(key=lambda x: x["scoring"]["overall_score"], reverse=True)
+    # Cold-start heuristic: if at least one recipe has a positive match, demote 0% matches
+    try:
+        any_positive_match = any((r.get("scoring", {}).get("match_percentage", 0.0) or 0.0) > 0 for r in scored_recipes)
+        if any_positive_match:
+            for r in scored_recipes:
+                sc = r.get("scoring", {})
+                if (sc.get("match_percentage", 0.0) or 0.0) == 0:
+                    # apply a small penalty to move 0% matches below matched items
+                    sc["overall_score"] = max(0.0, sc.get("overall_score", 0.0) - 5.0)
+    except Exception:
+        pass
+
+    # Sort by overall score (descending); tie-breaker: higher match percentage first
+    scored_recipes.sort(key=lambda x: (x["scoring"]["overall_score"], x["scoring"].get("match_percentage", 0.0)), reverse=True)
     
     return scored_recipes
