@@ -275,6 +275,19 @@ async def get_personalized_recommendations(
         except Exception as e:
             print(f"Error searching recipes with expiring ingredients: {e}")
     
+    # Ensure inventory-first candidates are present: always include a batch searched by inventory items
+    # This helps cold-start users avoid 0% match results even when CMAB exploration picks distant categories
+    try:
+        inv_candidates = await provider.search_with_ingredients(ingredient_names, number_of_recipes, ranking=2)
+        existing_ids = {r.get("id") if isinstance(r, dict) else r for r in recipes}
+        for r in inv_candidates:
+            rid = r.get("id")
+            if rid not in existing_ids:
+                recipes.append(r)
+                existing_ids.add(rid)
+    except Exception as e:
+        print(f"Error searching recipes by inventory items: {e}")
+
     # Fallback: Get recipes with all ingredients if needed
     if len(recipes) < number_of_recipes:
         try:
